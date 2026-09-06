@@ -1,6 +1,13 @@
 from fastapi import FastAPI
 
-app = FastAPI(title="AI Workspace", version="0.1.0")
+from ai_workspace.core.config import get_settings
+
+settings = get_settings()
+app = FastAPI(
+    title=settings.app_name,
+    version=settings.app_version,
+    debug=settings.debug,
+)
 
 
 @app.get("/health")
