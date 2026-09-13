@@ -9,6 +9,7 @@ CONFIG_ENV_VARS = (
     "AI_WORKSPACE_APP_VERSION",
     "AI_WORKSPACE_ENVIRONMENT",
     "AI_WORKSPACE_DEBUG",
+    "AI_WORKSPACE_DATABASE_URL",
 )
 
 
@@ -22,6 +23,9 @@ def test_default_settings(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     assert settings.app_version == "0.1.0"
     assert settings.environment == "development"
     assert settings.debug is False
+    assert settings.database_url == (
+        "postgresql+asyncpg://ai_workspace:ai_workspace@localhost:5432/ai_workspace"
+    )
 
 
 def test_dotenv_settings_and_environment_overrides(
@@ -47,6 +51,8 @@ def test_dotenv_settings_and_environment_overrides(
 
     monkeypatch.setenv("AI_WORKSPACE_APP_NAME", "Environment Workspace")
     monkeypatch.setenv("AI_WORKSPACE_DEBUG", "false")
+    database_url = "postgresql+asyncpg://test:test@localhost:5433/test_workspace"
+    monkeypatch.setenv("AI_WORKSPACE_DATABASE_URL", database_url)
 
     overridden_settings = Settings()
 
@@ -54,6 +60,7 @@ def test_dotenv_settings_and_environment_overrides(
     assert overridden_settings.app_version == "0.2.0"
     assert overridden_settings.environment == "testing"
     assert overridden_settings.debug is False
+    assert overridden_settings.database_url == database_url
 
 
 def test_get_settings_is_cached(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:

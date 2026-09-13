@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
     environment: str = "development"
     debug: bool = False
+    database_url: str = (
+        "postgresql+asyncpg://ai_workspace:ai_workspace@localhost:5432/ai_workspace"
+    )
 
 
 @lru_cache
