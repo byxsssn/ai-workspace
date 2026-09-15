@@ -15,4 +15,5 @@ Inspect the database revision and available script heads:
 
 versions/ intentionally has no revisions yet. Empty revision output is expected
 until real migrations exist. Do not create an empty revision merely for output.
-Alembic uses Base.metadata; no business models or schema changes are included.
+Alembic imports ai_workspace.models to register User on the existing Base.metadata.
+No migration revisions have been generated or applied.

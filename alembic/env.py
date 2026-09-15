@@ -5,6 +5,7 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from ai_workspace import models  # noqa: F401 - register models on Base.metadata
 from ai_workspace.core.config import get_settings
 from ai_workspace.db.base import Base
 from alembic import context
