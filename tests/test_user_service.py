@@ -7,7 +7,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ai_workspace.core.security import verify_password
 from ai_workspace.models import User
 from ai_workspace.repositories import UserRepository
-from ai_workspace.services import EmailAlreadyRegisteredError, UserService
+from ai_workspace.services import (
+    EmailAlreadyRegisteredError,
+    InactiveUserError,
+    InvalidCredentialsError,
+    UserService,
+)
 from ai_workspace.services import user as user_service_module
 
 
@@ -111,3 +116,133 @@ def test_register_rolls_back_and_reraises_write_failures(
         session.commit.assert_not_called()
     else:
         session.commit.assert_awaited_once_with()
+
+
+def test_authenticate_normalizes_email_verifies_password_and_returns_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = AsyncMock(spec=AsyncSession)
+    repository = Mock(spec=UserRepository)
+    expected_user = User(
+        email="example@example.invalid",
+        password_hash="stored-password-hash",
+        is_active=True,
+    )
+    original_fields = {
+        column.name: getattr(expected_user, column.name)
+        for column in User.__table__.columns
+    }
+    repository.get_by_email.return_value = expected_user
+    repository_factory = Mock(return_value=repository)
+    monkeypatch.setattr(user_service_module, "UserRepository", repository_factory)
+    verify_password_mock = Mock(return_value=True)
+    monkeypatch.setattr(user_service_module, "verify_password", verify_password_mock)
+    to_thread = AsyncMock(wraps=asyncio.to_thread)
+    monkeypatch.setattr(user_service_module.asyncio, "to_thread", to_thread)
+    password = "  preserve password spaces  "
+
+    user = asyncio.run(
+        UserService(session).authenticate("  Example@Example.invalid  ", password)
+    )
+
+    assert user is expected_user
+    repository_factory.assert_called_once_with(session)
+    repository.get_by_email.assert_awaited_once_with("example@example.invalid")
+    to_thread.assert_awaited_once_with(
+        verify_password_mock, password, "stored-password-hash"
+    )
+    verify_password_mock.assert_called_once_with(password, "stored-password-hash")
+    assert {
+        column.name: getattr(user, column.name) for column in User.__table__.columns
+    } == original_fields
+    repository.create.assert_not_called()
+    session.commit.assert_not_called()
+    session.rollback.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("is_active", "password_valid", "expected_error", "expected_message"),
+    [
+        pytest.param(
+            None,
+            False,
+            InvalidCredentialsError,
+            "Invalid email or password",
+            id="missing-user",
+        ),
+        pytest.param(
+            True,
+            False,
+            InvalidCredentialsError,
+            "Invalid email or password",
+            id="wrong-password",
+        ),
+        pytest.param(
+            False,
+            True,
+            InactiveUserError,
+            "User is inactive",
+            id="inactive-user",
+        ),
+        pytest.param(
+            False,
+            False,
+            InvalidCredentialsError,
+            "Invalid email or password",
+            id="inactive-user-with-wrong-password",
+        ),
+    ],
+)
+def test_authenticate_rejects_invalid_or_inactive_users_without_writing(
+    monkeypatch: pytest.MonkeyPatch,
+    is_active: bool | None,
+    password_valid: bool,
+    expected_error: type[Exception],
+    expected_message: str,
+) -> None:
+    session = AsyncMock(spec=AsyncSession)
+    repository = Mock(spec=UserRepository)
+    stored_user = None
+    original_fields = None
+    if is_active is not None:
+        stored_user = User(
+            email="example@example.invalid",
+            password_hash="stored-password-hash",
+            is_active=is_active,
+        )
+        original_fields = {
+            column.name: getattr(stored_user, column.name)
+            for column in User.__table__.columns
+        }
+    repository.get_by_email.return_value = stored_user
+    monkeypatch.setattr(
+        user_service_module, "UserRepository", Mock(return_value=repository)
+    )
+    verify_password_mock = Mock(return_value=password_valid)
+    monkeypatch.setattr(user_service_module, "verify_password", verify_password_mock)
+    to_thread = AsyncMock(wraps=asyncio.to_thread)
+    monkeypatch.setattr(user_service_module.asyncio, "to_thread", to_thread)
+    password = "  preserve password spaces  "
+
+    with pytest.raises(expected_error) as exc_info:
+        asyncio.run(
+            UserService(session).authenticate("  Example@Example.invalid  ", password)
+        )
+
+    assert str(exc_info.value) == expected_message
+    repository.get_by_email.assert_awaited_once_with("example@example.invalid")
+    if stored_user is None:
+        verify_password_mock.assert_not_called()
+        to_thread.assert_not_called()
+    else:
+        to_thread.assert_awaited_once_with(
+            verify_password_mock, password, "stored-password-hash"
+        )
+        verify_password_mock.assert_called_once_with(password, "stored-password-hash")
+        assert {
+            column.name: getattr(stored_user, column.name)
+            for column in User.__table__.columns
+        } == original_fields
+    repository.create.assert_not_called()
+    session.commit.assert_not_called()
+    session.rollback.assert_not_called()
