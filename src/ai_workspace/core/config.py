@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,6 +16,8 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
     environment: str = "development"
     debug: bool = False
+    jwt_secret_key: SecretStr = Field(min_length=32)
+    jwt_access_token_expire_minutes: int = Field(default=30, gt=0)
     database_url: str = (
         "postgresql+asyncpg://ai_workspace:ai_workspace@localhost:5432/ai_workspace"
     )
