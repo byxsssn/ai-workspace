@@ -3,7 +3,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ai_workspace.api.dependencies.auth import get_current_user
 from ai_workspace.db.session import get_db_session
+from ai_workspace.models import User
 from ai_workspace.schemas import UserRegisterRequest, UserResponse
 from ai_workspace.services import EmailAlreadyRegisteredError, UserService
 
@@ -30,3 +32,10 @@ async def register_user(
         ) from exc
 
     return UserResponse.model_validate(user)
+
+
+@router.get("/me", response_model=UserResponse)
+async def read_current_user(
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> UserResponse:
+    return UserResponse.model_validate(current_user)
