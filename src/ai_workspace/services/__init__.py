@@ -1,3 +1,7 @@
+from ai_workspace.services.conversation import (
+    ConversationNotFoundError,
+    ConversationService,
+)
 from ai_workspace.services.user import (
     EmailAlreadyRegisteredError,
     InactiveUserError,
@@ -6,6 +10,8 @@ from ai_workspace.services.user import (
 )
 
 __all__ = [
+    "ConversationNotFoundError",
+    "ConversationService",
     "EmailAlreadyRegisteredError",
     "InactiveUserError",
     "InvalidCredentialsError",
