@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from cryptography.fernet import Fernet
 from pydantic import SecretStr, ValidationError
 from pytest import MonkeyPatch
 
@@ -14,8 +15,10 @@ CONFIG_ENV_VARS = (
     "AI_WORKSPACE_DATABASE_URL",
     "AI_WORKSPACE_JWT_SECRET_KEY",
     "AI_WORKSPACE_JWT_ACCESS_TOKEN_EXPIRE_MINUTES",
+    "AI_WORKSPACE_CREDENTIAL_ENCRYPTION_KEY",
 )
 TEST_JWT_SECRET_KEY = "non-sensitive-test-jwt-secret-key-123456"
+TEST_CREDENTIAL_ENCRYPTION_KEY = Fernet.generate_key().decode("ascii")
 
 
 def test_default_settings(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
@@ -23,6 +26,9 @@ def test_default_settings(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("AI_WORKSPACE_JWT_SECRET_KEY", TEST_JWT_SECRET_KEY)
+    monkeypatch.setenv(
+        "AI_WORKSPACE_CREDENTIAL_ENCRYPTION_KEY", TEST_CREDENTIAL_ENCRYPTION_KEY
+    )
     settings = Settings()
 
     assert settings.app_name == "AI Workspace"
@@ -36,6 +42,13 @@ def test_default_settings(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     assert settings.jwt_secret_key.get_secret_value() == TEST_JWT_SECRET_KEY
     assert TEST_JWT_SECRET_KEY not in repr(settings)
     assert settings.jwt_access_token_expire_minutes == 30
+    assert isinstance(settings.credential_encryption_key, SecretStr)
+    assert (
+        settings.credential_encryption_key.get_secret_value()
+        == TEST_CREDENTIAL_ENCRYPTION_KEY
+    )
+    assert str(settings.credential_encryption_key) == "**********"
+    assert TEST_CREDENTIAL_ENCRYPTION_KEY not in repr(settings)
 
 
 def test_dotenv_settings_and_environment_overrides(
@@ -45,13 +58,15 @@ def test_dotenv_settings_and_environment_overrides(
         monkeypatch.delenv(name, raising=False)
     monkeypatch.chdir(tmp_path)
     dotenv_secret = "dotenv-non-sensitive-jwt-secret-key-123456"
+    dotenv_encryption_key = Fernet.generate_key().decode("ascii")
     (tmp_path / ".env").write_text(
         "AI_WORKSPACE_APP_NAME=Dotenv Workspace\n"
         "AI_WORKSPACE_APP_VERSION=0.2.0\n"
         "AI_WORKSPACE_ENVIRONMENT=testing\n"
         "AI_WORKSPACE_DEBUG=true\n"
         f"AI_WORKSPACE_JWT_SECRET_KEY={dotenv_secret}\n"
-        "AI_WORKSPACE_JWT_ACCESS_TOKEN_EXPIRE_MINUTES=45\n",
+        "AI_WORKSPACE_JWT_ACCESS_TOKEN_EXPIRE_MINUTES=45\n"
+        f"AI_WORKSPACE_CREDENTIAL_ENCRYPTION_KEY={dotenv_encryption_key}\n",
         encoding="utf-8",
     )
 
@@ -64,6 +79,11 @@ def test_dotenv_settings_and_environment_overrides(
     assert dotenv_settings.jwt_secret_key.get_secret_value() == dotenv_secret
     assert dotenv_secret not in repr(dotenv_settings)
     assert dotenv_settings.jwt_access_token_expire_minutes == 45
+    assert (
+        dotenv_settings.credential_encryption_key.get_secret_value()
+        == dotenv_encryption_key
+    )
+    assert dotenv_encryption_key not in repr(dotenv_settings)
 
     monkeypatch.setenv("AI_WORKSPACE_APP_NAME", "Environment Workspace")
     monkeypatch.setenv("AI_WORKSPACE_DEBUG", "false")
@@ -71,6 +91,9 @@ def test_dotenv_settings_and_environment_overrides(
     monkeypatch.setenv("AI_WORKSPACE_DATABASE_URL", database_url)
     monkeypatch.setenv("AI_WORKSPACE_JWT_SECRET_KEY", TEST_JWT_SECRET_KEY)
     monkeypatch.setenv("AI_WORKSPACE_JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "60")
+    monkeypatch.setenv(
+        "AI_WORKSPACE_CREDENTIAL_ENCRYPTION_KEY", TEST_CREDENTIAL_ENCRYPTION_KEY
+    )
 
     overridden_settings = Settings()
 
@@ -82,6 +105,11 @@ def test_dotenv_settings_and_environment_overrides(
     assert overridden_settings.jwt_secret_key.get_secret_value() == TEST_JWT_SECRET_KEY
     assert TEST_JWT_SECRET_KEY not in repr(overridden_settings)
     assert overridden_settings.jwt_access_token_expire_minutes == 60
+    assert (
+        overridden_settings.credential_encryption_key.get_secret_value()
+        == TEST_CREDENTIAL_ENCRYPTION_KEY
+    )
+    assert TEST_CREDENTIAL_ENCRYPTION_KEY not in repr(overridden_settings)
 
 
 def test_get_settings_is_cached(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
@@ -89,6 +117,9 @@ def test_get_settings_is_cached(monkeypatch: MonkeyPatch, tmp_path: Path) -> Non
         monkeypatch.delenv(name, raising=False)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("AI_WORKSPACE_JWT_SECRET_KEY", TEST_JWT_SECRET_KEY)
+    monkeypatch.setenv(
+        "AI_WORKSPACE_CREDENTIAL_ENCRYPTION_KEY", TEST_CREDENTIAL_ENCRYPTION_KEY
+    )
     get_settings.cache_clear()
 
     try:
@@ -98,6 +129,10 @@ def test_get_settings_is_cached(monkeypatch: MonkeyPatch, tmp_path: Path) -> Non
         assert get_settings() is settings
         assert get_settings().app_name == "AI Workspace"
         assert settings.jwt_secret_key.get_secret_value() == TEST_JWT_SECRET_KEY
+        assert (
+            settings.credential_encryption_key.get_secret_value()
+            == TEST_CREDENTIAL_ENCRYPTION_KEY
+        )
     finally:
         get_settings.cache_clear()
 
@@ -132,6 +167,9 @@ def test_invalid_jwt_settings_are_rejected(
     for name in CONFIG_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(
+        "AI_WORKSPACE_CREDENTIAL_ENCRYPTION_KEY", TEST_CREDENTIAL_ENCRYPTION_KEY
+    )
     if secret_key is not None:
         monkeypatch.setenv("AI_WORKSPACE_JWT_SECRET_KEY", secret_key)
     monkeypatch.setenv(

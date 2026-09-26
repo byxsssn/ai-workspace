@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 
 import jwt
 import pytest
+from cryptography.fernet import Fernet
 
 from ai_workspace.core import tokens
 from ai_workspace.core.config import Settings
@@ -17,6 +18,7 @@ def token_settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
         _env_file=None,
         jwt_secret_key=TEST_SECRET,
         jwt_access_token_expire_minutes=30,
+        credential_encryption_key=Fernet.generate_key().decode("ascii"),
     )
     monkeypatch.setattr(tokens, "get_settings", lambda: settings)
     return settings
