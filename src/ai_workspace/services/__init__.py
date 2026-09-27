@@ -3,6 +3,10 @@ from ai_workspace.services.conversation import (
     ConversationService,
 )
 from ai_workspace.services.message import InvalidMessageRoleError, MessageService
+from ai_workspace.services.provider_credential import (
+    ProviderCredentialNotFoundError,
+    ProviderCredentialService,
+)
 from ai_workspace.services.user import (
     EmailAlreadyRegisteredError,
     InactiveUserError,
@@ -18,5 +22,7 @@ __all__ = [
     "InvalidCredentialsError",
     "InvalidMessageRoleError",
     "MessageService",
+    "ProviderCredentialNotFoundError",
+    "ProviderCredentialService",
     "UserService",
 ]
