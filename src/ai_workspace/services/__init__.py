@@ -1,3 +1,4 @@
+from ai_workspace.services.chat import ChatService
 from ai_workspace.services.conversation import (
     ConversationNotFoundError,
     ConversationService,
@@ -15,6 +16,7 @@ from ai_workspace.services.user import (
 )
 
 __all__ = [
+    "ChatService",
     "ConversationNotFoundError",
     "ConversationService",
     "EmailAlreadyRegisteredError",

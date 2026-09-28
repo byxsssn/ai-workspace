@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_workspace.models import Message
@@ -18,7 +18,13 @@ class MessageRepository:
         role: str,
         content: str,
     ) -> Message:
-        message = Message(conversation_id=conversation_id, role=role, content=content)
+        # PostgreSQL now() is fixed per transaction; chat messages need write order.
+        message = Message(
+            conversation_id=conversation_id,
+            role=role,
+            content=content,
+            created_at=func.clock_timestamp(),
+        )
         self.session.add(message)
         await self.session.flush()
         return message
