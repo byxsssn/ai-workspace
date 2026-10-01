@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,7 +37,7 @@ class ChatService:
         content: str,
     ) -> ChatCompletionResponse:
         try:
-            await self.conversation_service.get(conversation_id, user_id)
+            conversation = await self.conversation_service.get(conversation_id, user_id)
             credential = await self.credential_service.get_openrouter(user_id)
             api_key = decrypt_api_key(credential.encrypted_api_key)
             history = await self.message_repository.list_by_conversation(
@@ -59,6 +60,8 @@ class ChatService:
                 role="assistant",
                 content=response.content,
             )
+            # PostgreSQL now() would reflect transaction start, before the provider call.
+            conversation.updated_at = datetime.now(UTC)
             await self.session.commit()
         except Exception:
             await self.session.rollback()

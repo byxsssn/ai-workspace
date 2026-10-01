@@ -4,6 +4,7 @@ import json
 import logging
 import traceback
 from collections.abc import AsyncIterator
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
@@ -107,6 +108,14 @@ async def persisted_messages(
     return [(message.role, message.content) for message in messages]
 
 
+async def conversation_updated_at(
+    session: AsyncSession, conversation_id: UUID
+) -> datetime:
+    conversation = await session.get(Conversation, conversation_id)
+    assert conversation is not None
+    return conversation.updated_at
+
+
 async def test_complete_chat_preserves_context_content_and_provider_result(
     db_session: AsyncSession,
     chat_ids: tuple[UUID, UUID, UUID],
@@ -115,6 +124,7 @@ async def test_complete_chat_preserves_context_content_and_provider_result(
     caplog.set_level(logging.DEBUG)
     owner_id, _, conversation_id = chat_ids
     await ProviderCredentialService(db_session).save_openrouter(owner_id, API_KEY)
+    previous_updated_at = await conversation_updated_at(db_session, conversation_id)
     requests: list[httpx2.Request] = []
 
     def handle(request: httpx2.Request) -> httpx2.Response:
@@ -148,6 +158,9 @@ async def test_complete_chat_preserves_context_content_and_provider_result(
             assert API_KEY not in repr(result)
             expected.append(("assistant", ANSWER))
             assert await persisted_messages(db_session, conversation_id) == expected
+            updated_at = await conversation_updated_at(db_session, conversation_id)
+            assert updated_at > previous_updated_at
+            previous_updated_at = updated_at
     assert len(requests) == 2
     assert API_KEY not in caplog.text
 
@@ -192,6 +205,7 @@ async def test_provider_failure_preserves_history_and_keeps_credentials_private(
 ) -> None:
     owner_id, _, conversation_id = chat_ids
     await ProviderCredentialService(db_session).save_openrouter(owner_id, API_KEY)
+    previous_updated_at = await conversation_updated_at(db_session, conversation_id)
     transport = httpx2.MockTransport(
         lambda _: httpx2.Response(401, json={"error": {"message": API_KEY}})
     )
@@ -205,6 +219,10 @@ async def test_provider_failure_preserves_history_and_keeps_credentials_private(
                 content="Failed message",
             )
     assert await persisted_messages(db_session, conversation_id) == HISTORY
+    assert (
+        await conversation_updated_at(db_session, conversation_id)
+        == previous_updated_at
+    )
     assert API_KEY not in "".join(traceback.format_exception(exc_info.value))
     assert API_KEY not in caplog.text
 
@@ -218,6 +236,7 @@ async def test_persistence_failure_rolls_back_both_messages(
 ) -> None:
     owner_id, _, conversation_id = chat_ids
     await ProviderCredentialService(db_session).save_openrouter(owner_id, API_KEY)
+    previous_updated_at = await conversation_updated_at(db_session, conversation_id)
     async with httpx2.AsyncClient(
         transport=httpx2.MockTransport(lambda _: completion())
     ) as client:
@@ -245,3 +264,7 @@ async def test_persistence_failure_rolls_back_both_messages(
                 content="Failed message",
             )
     assert await persisted_messages(db_session, conversation_id) == HISTORY
+    assert (
+        await conversation_updated_at(db_session, conversation_id)
+        == previous_updated_at
+    )
