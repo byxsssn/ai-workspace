@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ai_workspace.api.dependencies.auth import get_current_user
 from ai_workspace.db.session import get_db_session
 from ai_workspace.models import User
+from ai_workspace.providers.types import ProviderId
 from ai_workspace.schemas import OpenRouterCredentialRequest, ProviderCredentialResponse
 from ai_workspace.services import (
     ProviderCredentialNotFoundError,
@@ -48,8 +49,8 @@ async def save_openrouter_credential(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> ProviderCredentialResponse:
-    credential = await ProviderCredentialService(session).save_openrouter(
-        current_user.id, request.api_key.get_secret_value(), request.base_url
+    credential = await ProviderCredentialService(session).save(
+        current_user.id, ProviderId.OPENROUTER, request.api_key.get_secret_value()
     )
     return ProviderCredentialResponse.model_validate(credential)
 
@@ -60,8 +61,8 @@ async def get_openrouter_credential(
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> ProviderCredentialResponse:
     try:
-        credential = await ProviderCredentialService(session).get_openrouter(
-            current_user.id
+        credential = await ProviderCredentialService(session).get(
+            current_user.id, ProviderId.OPENROUTER
         )
     except ProviderCredentialNotFoundError as exc:
         raise HTTPException(
@@ -82,7 +83,9 @@ async def delete_openrouter_credential(
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> Response:
     try:
-        await ProviderCredentialService(session).delete_openrouter(current_user.id)
+        await ProviderCredentialService(session).delete(
+            current_user.id, ProviderId.OPENROUTER
+        )
     except ProviderCredentialNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

@@ -13,7 +13,11 @@ Inspect the database revision and available script heads:
     uv run alembic current
     uv run alembic heads
 
-versions/ intentionally has no revisions yet. Empty revision output is expected
-until real migrations exist. Do not create an empty revision merely for output.
-Alembic imports ai_workspace.models to register User on the existing Base.metadata.
-No migration revisions have been generated or applied.
+The version history creates users, conversations, messages and provider_credentials.
+Alembic imports ai_workspace.models to register these models on Base.metadata.
+Use `uv run alembic upgrade head` to apply the existing migrations to the configured
+database; use a dedicated test database before running integration tests.
+
+The nullable provider_credentials.base_url column is retained as legacy storage.
+V1 does not accept, return or use it. No schema migration is needed for the LLM
+provider boundary refactor; do not rewrite historical migrations to remove it.

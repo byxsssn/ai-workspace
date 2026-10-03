@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import FastAPI
 
 from ai_workspace.api.routes.auth import router as auth_router
@@ -6,6 +8,19 @@ from ai_workspace.api.routes.conversations import router as conversations_router
 from ai_workspace.api.routes.providers import router as providers_router
 from ai_workspace.api.routes.users import router as users_router
 from ai_workspace.core.config import get_settings
+
+
+def _configure_provider_logging() -> None:
+    """Keep upstream headers, bodies and SDK exceptions out of verbose logs."""
+    loggers = [logging.getLogger(name) for name in ("openai", "httpx2", "httpcore2")]
+    while loggers:
+        logger = loggers.pop()
+        logger.setLevel(logging.WARNING)
+        loggers.extend(logger.getChildren())
+
+
+# Run after the SDK imports, which may enable logging through OPENAI_LOG.
+_configure_provider_logging()
 
 settings = get_settings()
 app = FastAPI(

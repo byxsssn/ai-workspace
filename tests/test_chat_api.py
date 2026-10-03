@@ -1,9 +1,7 @@
 from collections.abc import AsyncIterator, Iterator
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
-import httpx2
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,7 +11,7 @@ from ai_workspace.api.routes import chat
 from ai_workspace.db.session import get_db_session
 from ai_workspace.main import app
 from ai_workspace.models import User
-from ai_workspace.providers import ChatCompletionResponse, ProviderError, TokenUsage
+from ai_workspace.providers import ModelResponse, ProviderError, TokenUsage
 from ai_workspace.services import (
     ChatService,
     ConversationNotFoundError,
@@ -24,19 +22,11 @@ from ai_workspace.services import (
 @pytest.fixture
 def client_user_service(
     monkeypatch: pytest.MonkeyPatch,
-) -> Iterator[tuple[TestClient, User, Mock, httpx2.AsyncClient]]:
+) -> Iterator[tuple[TestClient, User, Mock]]:
     user = User(id=uuid4())
     session = AsyncMock(spec=AsyncSession)
     service_factory = Mock(return_value=Mock(spec=ChatService))
     monkeypatch.setattr(chat, "ChatService", service_factory)
-
-    def unexpected_request(_: httpx2.Request) -> httpx2.Response:
-        pytest.fail("API unit tests must not make upstream requests")
-
-    http_client = httpx2.AsyncClient(transport=httpx2.MockTransport(unexpected_request))
-    monkeypatch.setattr(
-        chat, "httpx2", SimpleNamespace(AsyncClient=Mock(return_value=http_client))
-    )
 
     async def override_current_user() -> User:
         return user
@@ -50,7 +40,7 @@ def client_user_service(
         )
         overrides.setitem(app.dependency_overrides, get_db_session, override_db_session)
         with TestClient(app) as client:
-            yield client, user, service_factory, http_client
+            yield client, user, service_factory
 
 
 @pytest.mark.parametrize(
@@ -58,13 +48,13 @@ def client_user_service(
     [TokenUsage(prompt_tokens=12, completion_tokens=3, total_tokens=15), None],
 )
 def test_chat_uses_authenticated_user_and_returns_provider_result(
-    client_user_service: tuple[TestClient, User, Mock, httpx2.AsyncClient],
+    client_user_service: tuple[TestClient, User, Mock],
     monkeypatch: pytest.MonkeyPatch,
     usage: TokenUsage | None,
 ) -> None:
-    client, user, service_factory, http_client = client_user_service
+    client, user, service_factory = client_user_service
     service = service_factory.return_value
-    service.chat_completion.return_value = ChatCompletionResponse(
+    service.complete_turn.return_value = ModelResponse(
         content="  回答\n保持原文  ", model="actual-model", usage=usage
     )
     provider = Mock(spec=chat.OpenRouterProvider)
@@ -85,17 +75,16 @@ def test_chat_uses_authenticated_user_and_returns_provider_result(
         "model": "actual-model",
         "usage": usage.model_dump() if usage is not None else None,
     }
-    service.chat_completion.assert_awaited_once_with(
+    service.complete_turn.assert_awaited_once_with(
         user_id=user.id,
         conversation_id=conversation_id,
         model="requested-model",
         content=content,
     )
-    provider_factory.assert_called_once_with(http_client)
+    provider_factory.assert_called_once_with()
     service_factory.assert_called_once()
     assert isinstance(service_factory.call_args.args[0], AsyncSession)
     assert service_factory.call_args.args[1] is provider
-    assert http_client.is_closed
 
 
 @pytest.mark.parametrize(
@@ -109,7 +98,7 @@ def test_chat_uses_authenticated_user_and_returns_provider_result(
         (
             ProviderCredentialNotFoundError("Private credential details"),
             400,
-            "OpenRouter credential not configured",
+            "Provider credential not configured",
         ),
         (
             ProviderError("Secret upstream body: sk-or-private", status_code=401),
@@ -128,14 +117,14 @@ def test_chat_uses_authenticated_user_and_returns_provider_result(
         ),
     ],
 )
-def test_chat_maps_errors_and_closes_http_client(
-    client_user_service: tuple[TestClient, User, Mock, httpx2.AsyncClient],
+def test_chat_maps_errors_without_exposing_sensitive_details(
+    client_user_service: tuple[TestClient, User, Mock],
     error: Exception,
     status_code: int,
     detail: str,
 ) -> None:
-    client, _, service_factory, http_client = client_user_service
-    service_factory.return_value.chat_completion.side_effect = error
+    client, _, service_factory = client_user_service
+    service_factory.return_value.complete_turn.side_effect = error
 
     response = client.post(
         f"/conversations/{uuid4()}/chat",
@@ -144,14 +133,13 @@ def test_chat_maps_errors_and_closes_http_client(
 
     assert response.status_code == status_code
     assert response.json() == {"detail": detail}
-    assert http_client.is_closed
 
 
 def test_chat_requires_authentication_and_rejects_invalid_or_user_selected_identity(
-    client_user_service: tuple[TestClient, User, Mock, httpx2.AsyncClient],
+    client_user_service: tuple[TestClient, User, Mock],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client, _, service_factory, _ = client_user_service
+    client, _, service_factory = client_user_service
     url = f"/conversations/{uuid4()}/chat"
     valid_payload = {"model": "requested-model", "content": "Question"}
     for payload in (

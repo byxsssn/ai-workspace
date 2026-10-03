@@ -15,6 +15,7 @@ from sqlalchemy.pool import NullPool
 from ai_workspace.core import encryption
 from ai_workspace.core.config import get_settings
 from ai_workspace.models import ProviderCredential, User
+from ai_workspace.providers.types import ProviderId
 from ai_workspace.services import (
     ProviderCredentialNotFoundError,
     ProviderCredentialService,
@@ -68,9 +69,10 @@ async def test_save_replace_and_delete_preserve_secrets_and_user_isolation(
     service = ProviderCredentialService(db_session)
     api_key = "  test-only-key-原文\n  "
 
-    saved = await service.save_openrouter(owner_id, api_key)
+    saved = await service.save(owner_id, ProviderId.OPENROUTER, api_key)
 
     credential_id = saved.id
+    assert saved.base_url is None
     stored_ciphertext = await db_session.scalar(
         select(ProviderCredential.encrypted_api_key).where(
             ProviderCredential.id == credential_id
@@ -79,7 +81,9 @@ async def test_save_replace_and_delete_preserve_secrets_and_user_isolation(
     assert stored_ciphertext is not None
     assert stored_ciphertext != api_key
     assert encryption.decrypt_api_key(stored_ciphertext) == api_key
-    other_saved = await service.save_openrouter(other_user_id, "other-user-test-key")
+    other_saved = await service.save(
+        other_user_id, ProviderId.OPENROUTER, "other-user-test-key"
+    )
     other_id, other_ciphertext = other_saved.id, other_saved.encrypted_api_key
 
     # PostgreSQL now() is constant within the test's outer transaction.
@@ -88,9 +92,7 @@ async def test_save_replace_and_delete_preserve_secrets_and_user_isolation(
     await db_session.flush()
     replacement = "\t replacement-test-key\n"
 
-    updated = await service.save_openrouter(
-        owner_id, replacement, base_url="https://openrouter.ai/api/v1"
-    )
+    updated = await service.save(owner_id, ProviderId.OPENROUTER, replacement)
 
     assert updated.id == credential_id
     assert updated.updated_at > old_timestamp
@@ -107,19 +109,19 @@ async def test_save_replace_and_delete_preserve_secrets_and_user_isolation(
         == 1
     )
     db_session.expunge_all()
-    persisted = await service.get_openrouter(owner_id)
+    persisted = await service.get(owner_id, ProviderId.OPENROUTER)
     assert persisted.id == credential_id
     assert persisted.encrypted_api_key != replacement
     assert encryption.decrypt_api_key(persisted.encrypted_api_key) == replacement
-    assert persisted.base_url == "https://openrouter.ai/api/v1"
-    other_persisted = await service.get_openrouter(other_user_id)
+    assert persisted.base_url is None
+    other_persisted = await service.get(other_user_id, ProviderId.OPENROUTER)
     assert other_persisted.id == other_id
     assert other_persisted.encrypted_api_key == other_ciphertext
 
-    await service.delete_openrouter(owner_id)
+    await service.delete(owner_id, ProviderId.OPENROUTER)
 
     with pytest.raises(ProviderCredentialNotFoundError):
-        await service.get_openrouter(owner_id)
-    remaining = await service.get_openrouter(other_user_id)
+        await service.get(owner_id, ProviderId.OPENROUTER)
+    remaining = await service.get(other_user_id, ProviderId.OPENROUTER)
     assert remaining.id == other_id
     assert remaining.encrypted_api_key == other_ciphertext

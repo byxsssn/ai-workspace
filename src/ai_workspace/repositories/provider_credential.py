@@ -28,13 +28,11 @@ class ProviderCredentialRepository:
         user_id: UUID,
         provider: str,
         encrypted_api_key: str,
-        base_url: str | None = None,
     ) -> ProviderCredential:
         credential = ProviderCredential(
             user_id=user_id,
             provider=provider,
             encrypted_api_key=encrypted_api_key,
-            base_url=base_url,
         )
         self.session.add(credential)
         await self.session.flush()
@@ -44,10 +42,8 @@ class ProviderCredentialRepository:
         self,
         credential: ProviderCredential,
         encrypted_api_key: str,
-        base_url: str | None = None,
     ) -> ProviderCredential:
         credential.encrypted_api_key = encrypted_api_key
-        credential.base_url = base_url
         await self.session.flush()
         # Load the database-generated updated_at before async response serialization.
         await self.session.refresh(credential)

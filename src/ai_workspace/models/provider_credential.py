@@ -26,6 +26,7 @@ class ProviderCredential(Base):
     )
     provider: Mapped[str] = mapped_column(String(64), nullable=False)
     encrypted_api_key: Mapped[str] = mapped_column(Text, nullable=False)
+    # Legacy storage only; endpoints are fixed by each provider adapter.
     base_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

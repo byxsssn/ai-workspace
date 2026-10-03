@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_workspace.models import ProviderCredential
+from ai_workspace.providers.types import ProviderId
 from ai_workspace.repositories import ProviderCredentialRepository
 from ai_workspace.services import (
     ProviderCredentialNotFoundError,
@@ -41,9 +42,11 @@ def test_write_failures_roll_back_and_reraise(monkeypatch: pytest.MonkeyPatch) -
 
         with pytest.raises(RuntimeError) as exc_info:
             if operation == "delete":
-                asyncio.run(service.delete_openrouter(user_id))
+                asyncio.run(service.delete(user_id, ProviderId.OPENROUTER))
             else:
-                asyncio.run(service.save_openrouter(user_id, "test-api-key"))
+                asyncio.run(
+                    service.save(user_id, ProviderId.OPENROUTER, "test-api-key")
+                )
 
         assert exc_info.value is error
         session.rollback.assert_awaited()
@@ -57,15 +60,15 @@ def test_get_uses_user_scope_and_missing_credentials_raise_without_writes() -> N
     credential = ProviderCredential(user_id=user_id, provider="openrouter")
     service.repository.get_by_user_and_provider.return_value = credential
 
-    assert asyncio.run(service.get_openrouter(user_id)) is credential
+    assert asyncio.run(service.get(user_id, ProviderId.OPENROUTER)) is credential
     service.repository.get_by_user_and_provider.assert_awaited_with(
         user_id, "openrouter"
     )
 
     service.repository.get_by_user_and_provider.return_value = None
-    for method in (service.get_openrouter, service.delete_openrouter):
+    for method in (service.get, service.delete):
         with pytest.raises(ProviderCredentialNotFoundError):
-            asyncio.run(method(user_id))
+            asyncio.run(method(user_id, ProviderId.OPENROUTER))
 
     service.repository.delete.assert_not_called()
     session.commit.assert_not_called()

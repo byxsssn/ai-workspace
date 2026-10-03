@@ -62,7 +62,6 @@ async def test_repository_crud_isolates_users_and_does_not_commit(
             user_id=owner_id,
             provider="openrouter",
             encrypted_api_key="test-ciphertext-one",
-            base_url="https://openrouter.ai/api/v1",
         )
         other_credential = await repository.create(
             user_id=other_user_id,
@@ -79,12 +78,12 @@ async def test_repository_crud_isolates_users_and_does_not_commit(
         assert loaded.id == credential_id
         assert loaded.user_id == owner_id
         assert loaded.encrypted_api_key == "test-ciphertext-one"
-        assert loaded.base_url == "https://openrouter.ai/api/v1"
+        assert loaded.base_url is None
         assert await repository.get_by_user_and_provider(uuid4(), "openrouter") is None
         assert await repository.get_by_user_and_provider(owner_id, "other") is None
 
         updated = await repository.update(
-            loaded, encrypted_api_key="test-ciphertext-two", base_url=None
+            loaded, encrypted_api_key="test-ciphertext-two"
         )
 
         assert updated.id == credential_id

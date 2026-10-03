@@ -1,77 +1,115 @@
 from collections.abc import Sequence
+from json import JSONDecodeError
 
-import httpx2
+from openai import APIError, APIStatusError, AsyncOpenAI, DefaultAsyncHttpxClient
+from openai.types import CompletionUsage
+from openai.types.chat import ChatCompletion
+from openai.types.chat.chat_completion import Choice
+from openai.types.chat.chat_completion_message import ChatCompletionMessage
+from pydantic import ValidationError
 
 from ai_workspace.providers.errors import ProviderError
-from ai_workspace.providers.types import ChatCompletionResponse, ChatMessage
+from ai_workspace.providers.types import (
+    ModelMessage,
+    ModelResponse,
+    ProviderId,
+    TokenUsage,
+)
 
-_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
+_BASE_URL = "https://openrouter.ai/api/v1"
 
 
 class OpenRouterProvider:
-    """Non-streaming text completions using a caller-owned async HTTP client."""
+    """Non-streaming text completions with a request-scoped async SDK client."""
 
-    def __init__(self, client: httpx2.AsyncClient) -> None:
-        self._client = client
+    @property
+    def provider_id(self) -> ProviderId:
+        return ProviderId.OPENROUTER
 
-    async def chat_completion(
+    async def generate(
         self,
         *,
         api_key: str,
         model: str,
-        messages: Sequence[ChatMessage],
-    ) -> ChatCompletionResponse:
-        """Use a decrypted key for this request only; the caller closes the client."""
+        messages: Sequence[ModelMessage],
+    ) -> ModelResponse:
+        """Use the caller's decrypted key and close the SDK client after the call."""
         if not api_key or any(not 33 <= ord(char) <= 126 for char in api_key):
             raise ProviderError("Invalid OpenRouter API key")
 
         try:
-            response = await self._client.post(
-                _CHAT_COMPLETIONS_URL,
-                headers={"Authorization": f"Bearer {api_key}"},
-                json={
-                    "model": model,
-                    "messages": [message.model_dump() for message in messages],
-                    "stream": False,
-                },
-                auth=None,
-                follow_redirects=False,
+            async with AsyncOpenAI(
+                api_key=api_key,
+                base_url=_BASE_URL,
+                # Environment-provided SDK headers must not override BYOK.
+                default_headers={"Authorization": f"Bearer {api_key}"},
+                http_client=DefaultAsyncHttpxClient(follow_redirects=False),
                 timeout=60.0,
-            )
-        except httpx2.HTTPError, UnicodeError:
-            # Transport errors may contain headers or other sensitive input.
+                max_retries=0,
+            ) as client:
+                response = await client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": message.role, "content": message.content}
+                        for message in messages
+                    ],
+                    stream=False,
+                )
+        except APIStatusError as exc:
+            raise ProviderError(
+                f"OpenRouter returned HTTP {exc.status_code}",
+                status_code=exc.status_code,
+            ) from None
+        except JSONDecodeError:
+            raise ProviderError("OpenRouter returned an invalid response") from None
+        except APIError, UnicodeError:
+            # SDK exceptions may contain the upstream body or credentials.
             raise ProviderError("OpenRouter request failed") from None
 
-        if not response.is_success:
-            raise ProviderError(
-                f"OpenRouter returned HTTP {response.status_code}",
-                status_code=response.status_code,
-            )
-
         try:
-            data = response.json()
-            if not isinstance(data, dict) or data.get("error") is not None:
+            # SDK parsing is permissive; enforce only our text-result contract
+            # and OpenRouter's errors that may arrive in an HTTP 200 response.
+            if (
+                not isinstance(response, ChatCompletion)
+                or getattr(response, "error", None) is not None
+            ):
                 raise ValueError
-            choices = data["choices"]
+            choices = response.choices
             if not isinstance(choices, list) or not choices:
                 raise ValueError
             choice = choices[0]
             if (
-                not isinstance(choice, dict)
-                or choice.get("error") is not None
-                or choice.get("finish_reason") == "error"
+                not isinstance(choice, Choice)
+                or getattr(choice, "error", None) is not None
+                or getattr(choice, "finish_reason", None) == "error"
+                or not isinstance(choice.message, ChatCompletionMessage)
             ):
                 raise ValueError
 
-            result = ChatCompletionResponse(
-                content=choice["message"]["content"],
-                model=data["model"],
-                usage=data.get("usage"),
+            result = ModelResponse(
+                content=choice.message.content,
+                model=response.model,
+                usage=_map_usage(response.usage),
             )
             # Do not expose credentials even if an upstream response echoes them.
             if api_key in result.content or api_key in result.model:
                 raise ValueError
             return result
-        except KeyError, TypeError, ValueError:
-            # JSON and validation exceptions can include the upstream body.
+        except AttributeError, TypeError, ValueError:
+            # Mapping and validation exceptions can include upstream data.
             raise ProviderError("OpenRouter returned an invalid response") from None
+
+
+def _map_usage(usage: CompletionUsage | None) -> TokenUsage | None:
+    """Keep optional display statistics from making a valid answer fail."""
+    if not isinstance(usage, CompletionUsage):
+        return None
+    try:
+        return TokenUsage(
+            prompt_tokens=getattr(usage, "prompt_tokens", None),
+            completion_tokens=getattr(usage, "completion_tokens", None),
+            total_tokens=getattr(usage, "total_tokens", None),
+        )
+    except ValidationError:
+        # Accept SDK normalization, but never invent missing or invalid counts.
+        return None

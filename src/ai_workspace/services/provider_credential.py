@@ -4,9 +4,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_workspace.core.encryption import encrypt_api_key
 from ai_workspace.models import ProviderCredential
+from ai_workspace.providers.types import ProviderId
 from ai_workspace.repositories import ProviderCredentialRepository
-
-OPENROUTER_PROVIDER = "openrouter"
 
 
 class ProviderCredentialNotFoundError(Exception):
@@ -18,26 +17,24 @@ class ProviderCredentialService:
         self.session = session
         self.repository = ProviderCredentialRepository(session)
 
-    async def save_openrouter(
-        self, user_id: UUID, api_key: str, base_url: str | None = None
+    async def save(
+        self, user_id: UUID, provider: ProviderId, api_key: str
     ) -> ProviderCredential:
         try:
             credential = await self.repository.get_by_user_and_provider(
-                user_id, OPENROUTER_PROVIDER
+                user_id, provider.value
             )
             encrypted_api_key = encrypt_api_key(api_key)
             if credential is None:
                 credential = await self.repository.create(
                     user_id=user_id,
-                    provider=OPENROUTER_PROVIDER,
+                    provider=provider.value,
                     encrypted_api_key=encrypted_api_key,
-                    base_url=base_url,
                 )
             else:
                 credential = await self.repository.update(
                     credential,
                     encrypted_api_key=encrypted_api_key,
-                    base_url=base_url,
                 )
             await self.session.commit()
         except Exception:
@@ -46,16 +43,16 @@ class ProviderCredentialService:
 
         return credential
 
-    async def get_openrouter(self, user_id: UUID) -> ProviderCredential:
+    async def get(self, user_id: UUID, provider: ProviderId) -> ProviderCredential:
         credential = await self.repository.get_by_user_and_provider(
-            user_id, OPENROUTER_PROVIDER
+            user_id, provider.value
         )
         if credential is None:
             raise ProviderCredentialNotFoundError("Provider credential not found")
         return credential
 
-    async def delete_openrouter(self, user_id: UUID) -> None:
-        credential = await self.get_openrouter(user_id)
+    async def delete(self, user_id: UUID, provider: ProviderId) -> None:
+        credential = await self.get(user_id, provider)
         try:
             await self.repository.delete(credential)
             await self.session.commit()

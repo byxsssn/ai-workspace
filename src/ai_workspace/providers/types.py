@@ -1,9 +1,14 @@
+from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class ChatMessage(BaseModel):
+class ProviderId(StrEnum):
+    OPENROUTER = "openrouter"
+
+
+class ModelMessage(BaseModel):
     """A text message independent of persistence and HTTP API schemas."""
 
     model_config = ConfigDict(strict=True)
@@ -22,9 +27,11 @@ class TokenUsage(BaseModel):
     total_tokens: int | None = Field(default=None, ge=0)
 
 
-class ChatCompletionResponse(BaseModel):
+class ModelResponse(BaseModel):
+    """The usable text result of one generation, independent of its wire protocol."""
+
     model_config = ConfigDict(strict=True)
 
-    content: str
+    content: str = Field(min_length=1)
     model: str = Field(min_length=1)
     usage: TokenUsage | None = None
