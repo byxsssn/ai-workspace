@@ -32,7 +32,7 @@ flowchart LR
     Credentials --> DB[(Encrypted credentials)]
     Chat --> Contract[LLMProvider Protocol]
     Contract --> Router[OpenRouter adapter]
-    Router --> SDK[OpenAI SDK typed Chat Completions]
+    Router --> SDK[OpenAI SDK typed Responses]
     Chat --> Messages[(Conversation messages)]
 ```
 
@@ -58,24 +58,34 @@ unknown, without filling zeros or inferring totals. The adapter accepts SDK nume
 normalization, including values already coerced to integers. Malformed usage is
 discarded as `null` without discarding a valid answer.
 
-## Why Chat Completions for V1
+## Stateless Responses for V1
 
 The OpenRouter adapter uses the official OpenAI Python SDK's typed
-`chat.completions.create()` method. This fits V1's text history and OpenRouter's
-[documented SDK integration](https://openrouter.ai/docs/guides/community/openai-sdk).
+`responses.create()` method at `https://openrouter.ai/api/v1/responses`, with
+`store=False` and `stream=False`. Every request supplies the complete PostgreSQL
+message history and the new user message; no `previous_response_id` or provider
+conversation is used. This follows OpenRouter's
+[stateless contract](https://openrouter.ai/docs/api_reference/responses/overview)
+and [OpenAI's Responses direction](https://developers.openai.com/api/docs/guides/migrate-to-responses).
 
-[OpenAI recommends Responses for new projects](https://developers.openai.com/api/docs/guides/migrate-to-responses).
-A future direct OpenAI adapter should prefer it. This does not require changing
-ChatService for the same text-generation capability: the wire protocol belongs to
-each adapter. Other providers can use their own SDKs when actually implemented.
+The adapter maps system/user messages to `input_text` items and assistant history
+to `output_text` messages. OpenRouter
+[requires assistant history to include id and status](https://openrouter.ai/docs/api_reference/responses/basic-usage),
+so the adapter assigns IDs unique within each request and `status="completed"`.
+These are local item identifiers, not persisted provider response IDs.
 
-OpenRouter also supports Responses, but its
-[current documented contract is stateless](https://openrouter.ai/docs/api_reference/responses/overview):
-`store: true` and non-null `previous_response_id` are rejected. OpenAI-compatible
-does not promise every SDK feature or event shape is identical. Before changing
-protocols, verify the pinned SDK against the intended models. Tools, reasoning
-context and multimodal features may require extending the project contract when
-those product features are introduced. These choices were reviewed on 2026-10-01.
+The SDK's `Response.output_text` aggregates output text in order, preserving
+whitespace. Only completed responses without an error or incomplete details are
+accepted; missing usable text is an error. `Response.model` maps to the project
+model field, and `ResponseUsage.input_tokens`, `output_tokens` and `total_tokens`
+map to `TokenUsage.prompt_tokens`, `completion_tokens` and `total_tokens`.
+OpenRouter can omit usage detail objects that the SDK schema marks required; the
+adapter uses the SDK's permissive typed parsing and validates only the project
+contract, without re-parsing raw JSON or enforcing the entire OpenAI schema.
+
+ChatService and the provider-neutral types do not depend on Responses. There is
+no Chat Completions implementation or fallback. This mapping was checked against
+the locked OpenAI SDK 3.22.1 and official documentation on 2026-10-03.
 
 ## Credentials and client lifecycle
 
@@ -121,4 +131,7 @@ For checks without PostgreSQL, run:
 uv run pytest -q tests/test_openrouter_provider.py tests/test_provider_logging.py tests/test_chat_api.py tests/test_provider_credential_api.py tests/test_provider_credential_service.py tests/test_encryption.py
 ```
 
-No live OpenRouter or Responses compatibility claim is made by these mocked tests.
+No live OpenRouter compatibility claim is made by these mocked tests. A real
+smoke test must still verify the intended model's Responses support, assistant
+history with locally assigned item IDs, multi-turn context, returned text/usage
+and upstream error shapes.

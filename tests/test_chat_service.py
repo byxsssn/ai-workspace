@@ -307,7 +307,15 @@ async def test_openrouter_wiring_uses_saved_key_and_persists_the_reply(
             200,
             json={
                 "model": "returned-model",
-                "choices": [{"message": {"content": ANSWER}, "finish_reason": "stop"}],
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": ANSWER}],
+                    }
+                ],
             },
         )
 
@@ -328,14 +336,36 @@ async def test_openrouter_wiring_uses_saved_key_and_persists_the_reply(
 
     assert len(requests) == 1
     request = requests[0]
-    assert str(request.url) == "https://openrouter.ai/api/v1/chat/completions"
+    assert str(request.url) == "https://openrouter.ai/api/v1/responses"
     assert request.headers["Authorization"] == f"Bearer {API_KEY}"
     assert json.loads(request.content) == {
         "model": "requested-model",
-        "messages": [
-            {"role": role, "content": text}
-            for role, text in [*HISTORY, ("user", content)]
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": HISTORY[0][1]}],
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "id": "msg_1",
+                "status": "completed",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": HISTORY[1][1],
+                        "annotations": [],
+                    }
+                ],
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": content}],
+            },
         ],
+        "store": False,
         "stream": False,
     }
     assert result == ModelResponse(content=ANSWER, model="returned-model", usage=None)

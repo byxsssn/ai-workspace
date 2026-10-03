@@ -35,7 +35,13 @@ factory = openrouter.DefaultAsyncHttpxClient
 async def run():
     for status in (200, 401):
         payload = (
-            {'model': 'returned-model', 'choices': [{'message': {'content': 'Hello'}}]}
+            {
+                'model': 'returned-model', 'status': 'completed',
+                'output': [{
+                    'type': 'message', 'role': 'assistant', 'status': 'completed',
+                    'content': [{'type': 'output_text', 'text': 'Hello'}],
+                }],
+            }
             if status == 200 else {'error': {'message': detail + key}}
         )
         transport = httpx2.MockTransport(lambda request: httpx2.Response(

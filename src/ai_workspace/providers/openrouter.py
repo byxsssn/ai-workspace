@@ -2,10 +2,7 @@ from collections.abc import Sequence
 from json import JSONDecodeError
 
 from openai import APIError, APIStatusError, AsyncOpenAI, DefaultAsyncHttpxClient
-from openai.types import CompletionUsage
-from openai.types.chat import ChatCompletion
-from openai.types.chat.chat_completion import Choice
-from openai.types.chat.chat_completion_message import ChatCompletionMessage
+from openai.types.responses import Response, ResponseInputParam, ResponseUsage
 from pydantic import ValidationError
 
 from ai_workspace.providers.errors import ProviderError
@@ -20,7 +17,7 @@ _BASE_URL = "https://openrouter.ai/api/v1"
 
 
 class OpenRouterProvider:
-    """Non-streaming text completions with a request-scoped async SDK client."""
+    """Stateless text responses with a request-scoped async SDK client."""
 
     @property
     def provider_id(self) -> ProviderId:
@@ -47,12 +44,10 @@ class OpenRouterProvider:
                 timeout=60.0,
                 max_retries=0,
             ) as client:
-                response = await client.chat.completions.create(
+                response = await client.responses.create(
                     model=model,
-                    messages=[
-                        {"role": message.role, "content": message.content}
-                        for message in messages
-                    ],
+                    input=_map_input(messages),
+                    store=False,
                     stream=False,
                 )
         except APIStatusError as exc:
@@ -70,24 +65,15 @@ class OpenRouterProvider:
             # SDK parsing is permissive; enforce only our text-result contract
             # and OpenRouter's errors that may arrive in an HTTP 200 response.
             if (
-                not isinstance(response, ChatCompletion)
-                or getattr(response, "error", None) is not None
-            ):
-                raise ValueError
-            choices = response.choices
-            if not isinstance(choices, list) or not choices:
-                raise ValueError
-            choice = choices[0]
-            if (
-                not isinstance(choice, Choice)
-                or getattr(choice, "error", None) is not None
-                or getattr(choice, "finish_reason", None) == "error"
-                or not isinstance(choice.message, ChatCompletionMessage)
+                not isinstance(response, Response)
+                or response.status != "completed"
+                or response.error is not None
+                or response.incomplete_details is not None
             ):
                 raise ValueError
 
             result = ModelResponse(
-                content=choice.message.content,
+                content=response.output_text,
                 model=response.model,
                 usage=_map_usage(response.usage),
             )
@@ -100,14 +86,47 @@ class OpenRouterProvider:
             raise ProviderError("OpenRouter returned an invalid response") from None
 
 
-def _map_usage(usage: CompletionUsage | None) -> TokenUsage | None:
+def _map_input(messages: Sequence[ModelMessage]) -> ResponseInputParam:
+    """Rebuild full text history without referring to provider-side state."""
+    items: ResponseInputParam = []
+    for index, message in enumerate(messages):
+        if message.role == "assistant":
+            # OpenRouter requires id/status for assistant history. These IDs only
+            # identify items in this request; PostgreSQL owns the actual history.
+            items.append(
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "id": f"msg_{index}",
+                    "status": "completed",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": message.content,
+                            "annotations": [],
+                        }
+                    ],
+                }
+            )
+        else:
+            items.append(
+                {
+                    "type": "message",
+                    "role": message.role,
+                    "content": [{"type": "input_text", "text": message.content}],
+                }
+            )
+    return items
+
+
+def _map_usage(usage: ResponseUsage | None) -> TokenUsage | None:
     """Keep optional display statistics from making a valid answer fail."""
-    if not isinstance(usage, CompletionUsage):
+    if not isinstance(usage, ResponseUsage):
         return None
     try:
         return TokenUsage(
-            prompt_tokens=getattr(usage, "prompt_tokens", None),
-            completion_tokens=getattr(usage, "completion_tokens", None),
+            prompt_tokens=getattr(usage, "input_tokens", None),
+            completion_tokens=getattr(usage, "output_tokens", None),
             total_tokens=getattr(usage, "total_tokens", None),
         )
     except ValidationError:

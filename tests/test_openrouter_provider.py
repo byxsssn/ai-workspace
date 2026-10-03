@@ -19,14 +19,28 @@ from ai_workspace.providers.openrouter import OpenRouterProvider
 
 API_KEY = "sk-or-test-secret-must-not-appear"
 UPSTREAM_DETAIL = "private-upstream-error-details"
-ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
+ENDPOINT = "https://openrouter.ai/api/v1/responses"
 
 
-def completion_payload() -> dict[str, object]:
+def response_payload(content: str = "Hello") -> dict[str, object]:
     return {
         "id": API_KEY,
+        "object": "response",
         "model": "returned-model",
-        "choices": [{"message": {"content": "Hello"}, "finish_reason": "stop"}],
+        "status": "completed",
+        "error": None,
+        "incomplete_details": None,
+        "output": [
+            {
+                "id": "message-1",
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [
+                    {"type": "output_text", "text": content, "annotations": []}
+                ],
+            }
+        ],
     }
 
 
@@ -40,7 +54,10 @@ def assert_safe_error(error: ProviderError, caplog: pytest.LogCaptureFixture) ->
 
 
 def complete(
-    transport: httpx2.MockTransport, *, api_key: str = API_KEY
+    transport: httpx2.MockTransport,
+    *,
+    api_key: str = API_KEY,
+    messages: list[ModelMessage] | None = None,
 ) -> ModelResponse:
     clients: list[httpx2.AsyncClient] = []
 
@@ -56,7 +73,7 @@ def complete(
                 return await OpenRouterProvider().generate(
                     api_key=api_key,
                     model="requested-model",
-                    messages=[ModelMessage(role="user", content="Hi")],
+                    messages=messages or [ModelMessage(role="user", content="Hi")],
                 )
             finally:
                 for client in clients:
@@ -77,10 +94,10 @@ def test_generate_sends_fixed_request_and_maps_response(
         "OPENAI_CUSTOM_HEADERS", "authorization: Bearer untrusted-environment-key"
     )
     requests: list[httpx2.Request] = []
-    payload = completion_payload()
+    payload = response_payload()
     payload["usage"] = {
-        "prompt_tokens": 12,
-        "completion_tokens": 3,
+        "input_tokens": 12,
+        "output_tokens": 3,
         "total_tokens": 15,
         "cost": 0.001,
     }
@@ -89,7 +106,13 @@ def test_generate_sends_fixed_request_and_maps_response(
         requests.append(request)
         return httpx2.Response(200, json=payload)
 
-    result = complete(httpx2.MockTransport(handle))
+    messages = [
+        ModelMessage(role="system", content="Answer helpfully"),
+        ModelMessage(role="user", content="Earlier question"),
+        ModelMessage(role="assistant", content="Earlier answer"),
+        ModelMessage(role="user", content="Hi"),
+    ]
+    result = complete(httpx2.MockTransport(handle), messages=messages)
 
     assert isinstance(result, ModelResponse)
     assert OpenRouterProvider().provider_id is ProviderId.OPENROUTER
@@ -111,16 +134,46 @@ def test_generate_sends_fixed_request_and_maps_response(
     }
     assert json.loads(request.content) == {
         "model": "requested-model",
-        "messages": [{"role": "user", "content": "Hi"}],
+        "input": [
+            {
+                "type": "message",
+                "role": "system",
+                "content": [{"type": "input_text", "text": "Answer helpfully"}],
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Earlier question"}],
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "id": "msg_2",
+                "status": "completed",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": "Earlier answer",
+                        "annotations": [],
+                    }
+                ],
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Hi"}],
+            },
+        ],
+        "store": False,
         "stream": False,
     }
     assert API_KEY not in repr(result)
     assert API_KEY not in caplog.text
 
 
-@pytest.mark.parametrize("usage", [None, {}, {"completion_tokens": 0}])
+@pytest.mark.parametrize("usage", [None, {}, {"output_tokens": 0}])
 def test_generate_preserves_optional_usage(usage: dict[str, int] | None) -> None:
-    payload = completion_payload()
+    payload = response_payload()
     if usage is not None:
         payload["usage"] = usage
 
@@ -131,7 +184,7 @@ def test_generate_preserves_optional_usage(usage: dict[str, int] | None) -> None
     if usage is None:
         assert result.usage is None
     else:
-        assert result.usage == TokenUsage(**usage)
+        assert result.usage == TokenUsage(completion_tokens=usage.get("output_tokens"))
 
 
 @pytest.mark.parametrize(
@@ -140,16 +193,16 @@ def test_generate_preserves_optional_usage(usage: dict[str, int] | None) -> None
         "invalid",
         [],
         12,
-        {"prompt_tokens": API_KEY},
-        {"prompt_tokens": -1},
-        {"prompt_tokens": 1.5},
-        {"prompt_tokens": []},
-        {"prompt_tokens": {}},
-        {"prompt_tokens": 12, "completion_tokens": -1, "total_tokens": 11},
+        {"input_tokens": API_KEY},
+        {"input_tokens": -1},
+        {"input_tokens": 1.5},
+        {"input_tokens": []},
+        {"input_tokens": {}},
+        {"input_tokens": 12, "output_tokens": -1, "total_tokens": 11},
     ],
 )
 def test_invalid_usage_does_not_discard_a_valid_answer(usage: object) -> None:
-    payload = {**completion_payload(), "usage": usage}
+    payload = {**response_payload(), "usage": usage}
 
     result = complete(
         httpx2.MockTransport(lambda _: httpx2.Response(200, json=payload))
@@ -160,15 +213,17 @@ def test_invalid_usage_does_not_discard_a_valid_answer(usage: object) -> None:
     assert API_KEY not in repr(result)
 
 
-@pytest.mark.parametrize("prompt_tokens, expected", [("12", 12), (True, 1)])
-def test_usage_accepts_sdk_normalization(prompt_tokens: object, expected: int) -> None:
+@pytest.mark.parametrize("input_tokens, expected", [("12", 12), (True, 1)])
+def test_usage_accepts_sdk_normalization(input_tokens: object, expected: int) -> None:
     # A complete usage object is normalized by the SDK's typed model. The
     # adapter validates that result without re-reading the original JSON.
     payload = {
-        **completion_payload(),
+        **response_payload(),
         "usage": {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": 3,
+            "input_tokens": input_tokens,
+            "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
+            "output_tokens": 3,
+            "output_tokens_details": {"reasoning_tokens": 0},
             "total_tokens": 15,
         },
     }
@@ -182,11 +237,23 @@ def test_usage_accepts_sdk_normalization(prompt_tokens: object, expected: int) -
     )
 
 
-def test_generate_preserves_text_whitespace() -> None:
+def test_generate_aggregates_text_blocks_and_preserves_whitespace() -> None:
     content = "  Hello\n\nworld!  "
     payload = {
-        **completion_payload(),
-        "choices": [{"message": {"content": content}}],
+        **response_payload(),
+        "output": [
+            {
+                "id": f"message-{index}",
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [
+                    {"type": "output_text", "text": text, "annotations": []}
+                    for text in texts
+                ],
+            }
+            for index, texts in enumerate([["  Hello", "\n\n"], ["world!  "]])
+        ],
     }
 
     result = complete(
@@ -249,38 +316,44 @@ def test_transport_failures_are_wrapped_without_sensitive_details(
         None,
         {},
         {"error": {"message": API_KEY}},
-        {"model": "returned-model", "choices": []},
-        {**completion_payload(), "choices": None},
-        {**completion_payload(), "choices": {}},
-        {**completion_payload(), "choices": [None]},
-        {**completion_payload(), "choices": ["invalid"]},
-        {**completion_payload(), "choices": [{}]},
-        {**completion_payload(), "choices": [{"message": None}]},
-        {**completion_payload(), "choices": [{"message": "invalid"}]},
-        {**completion_payload(), "choices": [{"message": {}}]},
-        {**completion_payload(), "choices": [{"message": {"content": None}}]},
-        {**completion_payload(), "choices": [{"message": {"content": ""}}]},
-        {**completion_payload(), "choices": [{"message": {"content": []}}]},
-        {**completion_payload(), "choices": [{"message": {"content": 12}}]},
-        {**completion_payload(), "model": None},
-        {**completion_payload(), "model": ""},
-        {**completion_payload(), "model": []},
-        {**completion_payload(), "model": API_KEY},
-        {**completion_payload(), "error": {"message": API_KEY}},
+        {**response_payload(), "output": []},
+        {**response_payload(), "output": None},
+        {**response_payload(), "output": [None]},
+        {**response_payload(), "output": [{}]},
+        {**response_payload(), "output": [{"type": "message", "content": None}]},
         {
-            **completion_payload(),
-            "choices": [{"message": {"content": "Hello"}, "finish_reason": "error"}],
-        },
-        {
-            **completion_payload(),
-            "choices": [
-                {"message": {"content": "Hello"}, "error": {"message": API_KEY}}
+            **response_payload(),
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": []}],
+                }
             ],
         },
         {
-            **completion_payload(),
-            "choices": [{"message": {"content": f"Reflected key: {API_KEY}"}}],
+            **response_payload(),
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "refusal", "refusal": API_KEY}],
+                }
+            ],
         },
+        response_payload(""),
+        {**response_payload(), "model": None},
+        {**response_payload(), "model": ""},
+        {**response_payload(), "model": []},
+        {**response_payload(), "model": API_KEY},
+        {**response_payload(), "status": "failed", "error": {"message": API_KEY}},
+        {**response_payload(), "status": "incomplete"},
+        {**response_payload(), "status": "in_progress"},
+        {**response_payload(), "status": None},
+        {**response_payload(), "error": {"message": API_KEY}},
+        {
+            **response_payload(),
+            "incomplete_details": {"reason": "max_output_tokens"},
+        },
+        response_payload(f"Reflected key: {API_KEY}"),
     ],
 )
 def test_invalid_upstream_responses_raise_safe_provider_errors(
@@ -362,7 +435,7 @@ def test_concurrent_requests_keep_credentials_isolated(
             if len(requests) == 2:
                 both_started.set()
             await asyncio.wait_for(both_started.wait(), timeout=5)
-            payload = completion_payload()
+            payload = response_payload()
             payload["model"] = json.loads(request.content)["model"]
             return httpx2.Response(200, json=payload)
 
