@@ -2,7 +2,7 @@ import asyncio
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ai_workspace.core.security import hash_password, verify_password
+from ai_workspace.core.passwords import hash_password, verify_password
 from ai_workspace.models import User
 from ai_workspace.repositories import UserRepository
 

@@ -17,9 +17,10 @@ class ProviderCredentialService:
         self.session = session
         self.repository = ProviderCredentialRepository(session)
 
-    async def save(
+    async def set_api_key(
         self, user_id: UUID, provider: ProviderId, api_key: str
     ) -> ProviderCredential:
+        """Create or replace the user's encrypted API key for this provider."""
         try:
             credential = await self.repository.get_by_user_and_provider(
                 user_id, provider.value

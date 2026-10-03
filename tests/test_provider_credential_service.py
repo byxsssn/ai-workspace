@@ -45,7 +45,7 @@ def test_write_failures_roll_back_and_reraise(monkeypatch: pytest.MonkeyPatch) -
                 asyncio.run(service.delete(user_id, ProviderId.OPENROUTER))
             else:
                 asyncio.run(
-                    service.save(user_id, ProviderId.OPENROUTER, "test-api-key")
+                    service.set_api_key(user_id, ProviderId.OPENROUTER, "test-api-key")
                 )
 
         assert exc_info.value is error

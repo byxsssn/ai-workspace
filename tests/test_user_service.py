@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ai_workspace.core.security import verify_password
+from ai_workspace.core.passwords import verify_password
 from ai_workspace.models import User
 from ai_workspace.repositories import UserRepository
 from ai_workspace.services import (

@@ -137,7 +137,7 @@ async def test_complete_chat_preserves_context_content_and_provider_result(
 ) -> None:
     caplog.set_level(logging.DEBUG)
     owner_id, _, conversation_id = chat_ids
-    await ProviderCredentialService(db_session).save(
+    await ProviderCredentialService(db_session).set_api_key(
         owner_id, ProviderId.OPENROUTER, API_KEY
     )
     previous_updated_at = await conversation_updated_at(db_session, conversation_id)
@@ -187,7 +187,7 @@ async def test_rejects_unavailable_conversation_or_credential_before_provider(
     target_id = conversation_id
     error = ConversationNotFoundError
     if rejection == "credential":
-        await ProviderCredentialService(db_session).save(
+        await ProviderCredentialService(db_session).set_api_key(
             other_id, ProviderId.OPENROUTER, API_KEY
         )
         error = ProviderCredentialNotFoundError
@@ -215,7 +215,7 @@ async def test_provider_failure_preserves_history_and_keeps_credentials_private(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     owner_id, _, conversation_id = chat_ids
-    await ProviderCredentialService(db_session).save(
+    await ProviderCredentialService(db_session).set_api_key(
         owner_id, ProviderId.OPENROUTER, API_KEY
     )
     previous_updated_at = await conversation_updated_at(db_session, conversation_id)
@@ -249,7 +249,7 @@ async def test_persistence_failure_rolls_back_both_messages(
     failure: str,
 ) -> None:
     owner_id, _, conversation_id = chat_ids
-    await ProviderCredentialService(db_session).save(
+    await ProviderCredentialService(db_session).set_api_key(
         owner_id, ProviderId.OPENROUTER, API_KEY
     )
     previous_updated_at = await conversation_updated_at(db_session, conversation_id)
@@ -296,7 +296,7 @@ async def test_openrouter_wiring_uses_saved_key_and_persists_the_reply(
     from ai_workspace.providers.openrouter import OpenRouterProvider
 
     owner_id, _, conversation_id = chat_ids
-    await ProviderCredentialService(db_session).save(
+    await ProviderCredentialService(db_session).set_api_key(
         owner_id, ProviderId.OPENROUTER, API_KEY
     )
     requests: list[httpx2.Request] = []

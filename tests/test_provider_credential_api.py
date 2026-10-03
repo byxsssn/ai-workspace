@@ -26,7 +26,7 @@ def client_user_service(
     session = AsyncMock(spec=AsyncSession)
     service = Mock(spec=ProviderCredentialService)
     monkeypatch.setattr(
-        "ai_workspace.api.routes.providers.ProviderCredentialService",
+        "ai_workspace.api.routes.provider_credentials.ProviderCredentialService",
         Mock(return_value=service),
     )
 
@@ -75,7 +75,7 @@ def test_save_openrouter_preserves_key_and_returns_only_metadata(
     client, user, service = client_user_service
     api_key = "  sk-or-test-only-key\n "
     credential = make_credential(user.id, "https://legacy.example.test/v1")
-    service.save.return_value = credential
+    service.set_api_key.return_value = credential
 
     response = client.put("/providers/openrouter", json={"api_key": api_key})
 
@@ -89,7 +89,7 @@ def test_save_openrouter_preserves_key_and_returns_only_metadata(
     assert api_key.strip() not in response.text
     assert credential.encrypted_api_key not in response.text
     assert credential.base_url not in response.text
-    service.save.assert_awaited_with(user.id, ProviderId.OPENROUTER, api_key)
+    service.set_api_key.assert_awaited_with(user.id, ProviderId.OPENROUTER, api_key)
 
 
 def test_get_openrouter_returns_only_metadata(
@@ -159,7 +159,7 @@ def test_openrouter_failures_do_not_disclose_credentials(
         assert response.status_code == 422
         assert response.json() == {"detail": "Invalid provider credential request"}
         assert sensitive_marker not in response.text
-    service.save.assert_not_called()
+    service.set_api_key.assert_not_called()
 
     service.reset_mock()
     with monkeypatch.context() as auth_override:

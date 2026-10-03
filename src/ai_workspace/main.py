@@ -5,7 +5,9 @@ from fastapi import FastAPI
 from ai_workspace.api.routes.auth import router as auth_router
 from ai_workspace.api.routes.chat import router as chat_router
 from ai_workspace.api.routes.conversations import router as conversations_router
-from ai_workspace.api.routes.providers import router as providers_router
+from ai_workspace.api.routes.provider_credentials import (
+    router as provider_credentials_router,
+)
 from ai_workspace.api.routes.users import router as users_router
 from ai_workspace.core.config import get_settings
 
@@ -32,7 +34,7 @@ app.include_router(users_router)
 app.include_router(auth_router)
 app.include_router(conversations_router)
 app.include_router(chat_router)
-app.include_router(providers_router)
+app.include_router(provider_credentials_router)
 
 
 @app.get("/health")

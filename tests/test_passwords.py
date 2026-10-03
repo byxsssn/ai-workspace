@@ -1,4 +1,4 @@
-from ai_workspace.core.security import hash_password, verify_password
+from ai_workspace.core.passwords import hash_password, verify_password
 
 
 def test_hash_password_and_verify_correct_and_wrong_passwords() -> None:

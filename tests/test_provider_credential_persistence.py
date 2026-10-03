@@ -69,7 +69,7 @@ async def test_save_replace_and_delete_preserve_secrets_and_user_isolation(
     service = ProviderCredentialService(db_session)
     api_key = "  test-only-key-原文\n  "
 
-    saved = await service.save(owner_id, ProviderId.OPENROUTER, api_key)
+    saved = await service.set_api_key(owner_id, ProviderId.OPENROUTER, api_key)
 
     credential_id = saved.id
     assert saved.base_url is None
@@ -81,7 +81,7 @@ async def test_save_replace_and_delete_preserve_secrets_and_user_isolation(
     assert stored_ciphertext is not None
     assert stored_ciphertext != api_key
     assert encryption.decrypt_api_key(stored_ciphertext) == api_key
-    other_saved = await service.save(
+    other_saved = await service.set_api_key(
         other_user_id, ProviderId.OPENROUTER, "other-user-test-key"
     )
     other_id, other_ciphertext = other_saved.id, other_saved.encrypted_api_key
@@ -92,7 +92,7 @@ async def test_save_replace_and_delete_preserve_secrets_and_user_isolation(
     await db_session.flush()
     replacement = "\t replacement-test-key\n"
 
-    updated = await service.save(owner_id, ProviderId.OPENROUTER, replacement)
+    updated = await service.set_api_key(owner_id, ProviderId.OPENROUTER, replacement)
 
     assert updated.id == credential_id
     assert updated.updated_at > old_timestamp

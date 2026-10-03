@@ -49,7 +49,7 @@ async def save_openrouter_credential(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> ProviderCredentialResponse:
-    credential = await ProviderCredentialService(session).save(
+    credential = await ProviderCredentialService(session).set_api_key(
         current_user.id, ProviderId.OPENROUTER, request.api_key.get_secret_value()
     )
     return ProviderCredentialResponse.model_validate(credential)
