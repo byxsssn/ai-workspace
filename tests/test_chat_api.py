@@ -11,7 +11,12 @@ from ai_workspace.api.routes import chat
 from ai_workspace.db.session import get_db_session
 from ai_workspace.main import app
 from ai_workspace.models import User
-from ai_workspace.providers import ModelResponse, ProviderError, TokenUsage
+from ai_workspace.providers import (
+    ModelResponse,
+    ProviderError,
+    ReasoningEffort,
+    TokenUsage,
+)
 from ai_workspace.services import (
     ChatService,
     ConversationNotFoundError,
@@ -80,11 +85,89 @@ def test_chat_uses_authenticated_user_and_returns_provider_result(
         conversation_id=conversation_id,
         model="requested-model",
         content=content,
+        reasoning_effort=None,
     )
     provider_factory.assert_called_once_with()
     service_factory.assert_called_once()
     assert isinstance(service_factory.call_args.args[0], AsyncSession)
     assert service_factory.call_args.args[1] is provider
+
+
+@pytest.mark.parametrize(
+    "reasoning_effort",
+    [None, "none", "minimal", "low", "medium", "high", "xhigh", "max"],
+)
+def test_chat_passes_selected_reasoning_effort(
+    client_user_service: tuple[TestClient, User, Mock],
+    reasoning_effort: ReasoningEffort | None,
+) -> None:
+    client, user, service_factory = client_user_service
+    service = service_factory.return_value
+    service.complete_turn.return_value = ModelResponse(content="Answer", model="model")
+    conversation_id = uuid4()
+
+    response = client.post(
+        f"/conversations/{conversation_id}/chat",
+        json={
+            "model": "model",
+            "content": "Question",
+            "reasoning_effort": reasoning_effort,
+        },
+    )
+
+    assert response.status_code == 200
+    service.complete_turn.assert_awaited_once_with(
+        user_id=user.id,
+        conversation_id=conversation_id,
+        model="model",
+        content="Question",
+        reasoning_effort=reasoning_effort,
+    )
+
+
+@pytest.mark.parametrize("reasoning_effort", ["", "automatic", "HIGH", 1, True, [], {}])
+def test_chat_rejects_invalid_reasoning_effort_before_service(
+    client_user_service: tuple[TestClient, User, Mock], reasoning_effort: object
+) -> None:
+    client, _, service_factory = client_user_service
+
+    response = client.post(
+        f"/conversations/{uuid4()}/chat",
+        json={
+            "model": "model",
+            "content": "Question",
+            "reasoning_effort": reasoning_effort,
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["body", "reasoning_effort"]
+    service_factory.assert_not_called()
+
+
+def test_chat_openapi_exposes_optional_reasoning_effort_choices(
+    client_user_service: tuple[TestClient, User, Mock],
+) -> None:
+    client, _, _ = client_user_service
+    schemas = client.get("/openapi.json").json()["components"]["schemas"]
+    schema = schemas["ChatRequest"]
+    field = schema["properties"]["reasoning_effort"]
+
+    assert "reasoning_effort" not in schema["required"]
+    assert field["anyOf"] == [
+        {"$ref": "#/components/schemas/ReasoningEffort"},
+        {"type": "null"},
+    ]
+    assert schemas["ReasoningEffort"]["type"] == "string"
+    assert schemas["ReasoningEffort"]["enum"] == [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    ]
 
 
 @pytest.mark.parametrize(

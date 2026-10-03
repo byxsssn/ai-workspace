@@ -32,6 +32,7 @@ async def chat_completion(
             conversation_id=conversation_id,
             model=request.model,
             content=request.content,
+            reasoning_effort=request.reasoning_effort,
         )
     except ConversationNotFoundError as exc:
         raise HTTPException(

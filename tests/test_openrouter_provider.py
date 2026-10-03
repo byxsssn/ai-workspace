@@ -12,6 +12,7 @@ from ai_workspace.providers import (
     ModelResponse,
     ProviderError,
     ProviderId,
+    ReasoningEffort,
     TokenUsage,
     openrouter,
 )
@@ -58,6 +59,7 @@ def complete(
     *,
     api_key: str = API_KEY,
     messages: list[ModelMessage] | None = None,
+    reasoning_effort: ReasoningEffort | None = None,
 ) -> ModelResponse:
     clients: list[httpx2.AsyncClient] = []
 
@@ -74,6 +76,7 @@ def complete(
                     api_key=api_key,
                     model="requested-model",
                     messages=messages or [ModelMessage(role="user", content="Hi")],
+                    reasoning_effort=reasoning_effort,
                 )
             finally:
                 for client in clients:
@@ -169,6 +172,31 @@ def test_generate_sends_fixed_request_and_maps_response(
     }
     assert API_KEY not in repr(result)
     assert API_KEY not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "reasoning_effort",
+    [None, "none", "minimal", "low", "medium", "high", "xhigh", "max"],
+)
+def test_generate_maps_selected_reasoning_effort_to_responses_request(
+    reasoning_effort: ReasoningEffort | None,
+) -> None:
+    requests: list[httpx2.Request] = []
+
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        return httpx2.Response(200, json=response_payload())
+
+    complete(httpx2.MockTransport(handle), reasoning_effort=reasoning_effort)
+
+    assert len(requests) == 1
+    assert str(requests[0].url) == ENDPOINT
+    payload = json.loads(requests[0].content)
+    assert "reasoning_effort" not in payload
+    if reasoning_effort is None:
+        assert "reasoning" not in payload
+    else:
+        assert payload["reasoning"] == {"effort": reasoning_effort}
 
 
 @pytest.mark.parametrize("usage", [None, {}, {"output_tokens": 0}])
@@ -470,7 +498,9 @@ def test_concurrent_requests_keep_credentials_isolated(
         assert client.is_closed
         assert "Authorization" not in client.headers
     for request in requests:
-        index = json.loads(request.content)["model"].rsplit("-", 1)[1]
+        payload = json.loads(request.content)
+        index = payload["model"].rsplit("-", 1)[1]
+        assert "reasoning" not in payload
         assert request.headers["Authorization"] == f"Bearer {API_KEY}-{index}"
         assert str(request.url) == ENDPOINT
 

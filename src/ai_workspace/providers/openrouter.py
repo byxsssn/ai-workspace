@@ -1,7 +1,7 @@
 from collections.abc import Sequence
 from json import JSONDecodeError
 
-from openai import APIError, APIStatusError, AsyncOpenAI, DefaultAsyncHttpxClient
+from openai import APIError, APIStatusError, AsyncOpenAI, DefaultAsyncHttpxClient, omit
 from openai.types.responses import Response, ResponseInputParam, ResponseUsage
 from pydantic import ValidationError
 
@@ -10,6 +10,7 @@ from ai_workspace.providers.types import (
     ModelMessage,
     ModelResponse,
     ProviderId,
+    ReasoningEffort,
     TokenUsage,
 )
 
@@ -29,6 +30,7 @@ class OpenRouterProvider:
         api_key: str,
         model: str,
         messages: Sequence[ModelMessage],
+        reasoning_effort: ReasoningEffort | None = None,
     ) -> ModelResponse:
         """Use the caller's decrypted key and close the SDK client after the call."""
         if not api_key or any(not 33 <= ord(char) <= 126 for char in api_key):
@@ -47,6 +49,11 @@ class OpenRouterProvider:
                 response = await client.responses.create(
                     model=model,
                     input=_map_input(messages),
+                    reasoning=(
+                        {"effort": reasoning_effort}
+                        if reasoning_effort is not None
+                        else omit
+                    ),
                     store=False,
                     stream=False,
                 )

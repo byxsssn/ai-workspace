@@ -23,6 +23,23 @@ with `PUT /providers/openrouter` using only an `api_key` field. Create a convers
 with `POST /conversations`, then send `model` and `content` to
 `POST /conversations/{conversation_id}/chat`.
 
+Include the optional `reasoning_effort` field to select reasoning effort for a turn:
+
+```json
+{
+  "model": "openai/o4-mini",
+  "content": "Explain why this algorithm works.",
+  "reasoning_effort": "high"
+}
+```
+
+Accepted values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max`.
+Omitting the field or sending `null` uses the model's default; the string `"none"`
+requests no reasoning. The choice applies only to the current request and is not
+saved as a conversation preference. Invalid values return 422. Supported levels
+depend on the selected model; see OpenRouter's
+[reasoning options](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens).
+
 ## LLM boundary
 
 ```mermaid
@@ -48,7 +65,8 @@ SDK objects and exceptions stay inside the adapter. The only implemented
 `ProviderId` is `openrouter`; fixed credential routes choose it server-side.
 An OpenRouter model name such as `openai/...` does not select a different credential.
 
-The HTTP Chat contract remains `model`/`content` in and `content`/`model`/`usage` out.
+The HTTP Chat contract accepts `model`/`content` and optional `reasoning_effort`,
+and returns `content`/`model`/`usage`.
 Missing provider credentials return a safe 400; upstream failures return a safe 502.
 The adapter rejects unusable text, invalid model values, embedded upstream errors
 and responses reflecting the current key. It preserves valid text whitespace.
@@ -67,6 +85,10 @@ message history and the new user message; no `previous_response_id` or provider
 conversation is used. This follows OpenRouter's
 [stateless contract](https://openrouter.ai/docs/api_reference/responses/overview)
 and [OpenAI's Responses direction](https://developers.openai.com/api/docs/guides/migrate-to-responses).
+
+When selected, `reasoning_effort` maps to the Responses API's `reasoning.effort`.
+When omitted or null, the adapter omits `reasoning` from the upstream request.
+See OpenRouter's [Responses reasoning configuration](https://openrouter.ai/docs/api_reference/responses/reasoning).
 
 The adapter maps system/user messages to `input_text` items and assistant history
 to `output_text` messages. OpenRouter

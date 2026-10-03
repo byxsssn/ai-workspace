@@ -1,7 +1,12 @@
 from collections.abc import Sequence
 from typing import Protocol
 
-from ai_workspace.providers.types import ModelMessage, ModelResponse, ProviderId
+from ai_workspace.providers.types import (
+    ModelMessage,
+    ModelResponse,
+    ProviderId,
+    ReasoningEffort,
+)
 
 
 class LLMProvider(Protocol):
@@ -16,4 +21,5 @@ class LLMProvider(Protocol):
         api_key: str,
         model: str,
         messages: Sequence[ModelMessage],
+        reasoning_effort: ReasoningEffort | None = None,
     ) -> ModelResponse: ...

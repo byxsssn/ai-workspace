@@ -8,6 +8,7 @@ from ai_workspace.providers import (
     LLMProvider,
     ModelMessage,
     ModelResponse,
+    ReasoningEffort,
 )
 from ai_workspace.repositories import MessageRepository
 from ai_workspace.services.conversation import ConversationService
@@ -35,6 +36,7 @@ class ChatService:
         conversation_id: UUID,
         model: str,
         content: str,
+        reasoning_effort: ReasoningEffort | None = None,
     ) -> ModelResponse:
         try:
             conversation = await self.conversation_service.get(conversation_id, user_id)
@@ -51,7 +53,10 @@ class ChatService:
             ]
             messages.append(ModelMessage(role="user", content=content))
             response = await self.provider.generate(
-                api_key=api_key, model=model, messages=messages
+                api_key=api_key,
+                model=model,
+                messages=messages,
+                reasoning_effort=reasoning_effort,
             )
 
             await self.message_repository.create(

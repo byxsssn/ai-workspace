@@ -23,6 +23,7 @@ from ai_workspace.providers import (
     ModelResponse,
     ProviderError,
     ProviderId,
+    ReasoningEffort,
     TokenUsage,
 )
 from ai_workspace.repositories import MessageRepository
@@ -42,7 +43,9 @@ ANSWER = "  回答\n保持原文  "
 class FakeProvider:
     def __init__(self, *, error: ProviderError | None = None) -> None:
         self.error = error
-        self.calls: list[tuple[str, str, list[ModelMessage]]] = []
+        self.calls: list[
+            tuple[str, str, list[ModelMessage], ReasoningEffort | None]
+        ] = []
         self.response = ModelResponse(
             content=ANSWER,
             model="returned-model",
@@ -54,9 +57,14 @@ class FakeProvider:
         return ProviderId.OPENROUTER
 
     async def generate(
-        self, *, api_key: str, model: str, messages: Sequence[ModelMessage]
+        self,
+        *,
+        api_key: str,
+        model: str,
+        messages: Sequence[ModelMessage],
+        reasoning_effort: ReasoningEffort | None = None,
     ) -> ModelResponse:
-        self.calls.append((api_key, model, list(messages)))
+        self.calls.append((api_key, model, list(messages), reasoning_effort))
         if self.error is not None:
             raise self.error
         return self.response
@@ -146,17 +154,23 @@ async def test_complete_chat_preserves_context_content_and_provider_result(
     service = ChatService(db_session, provider)
     get_credential = AsyncMock(wraps=service.credential_service.get)
     monkeypatch.setattr(service.credential_service, "get", get_credential)
-    for content in ["  本次问题\n保留空白  ", "Follow-up question"]:
+    turns: list[tuple[str, ReasoningEffort | None]] = [
+        ("  本次问题\n保留空白  ", "high"),
+        ("Follow-up question", None),
+    ]
+    for content, reasoning_effort in turns:
         result = await service.complete_turn(
             user_id=owner_id,
             conversation_id=conversation_id,
             model="requested-model",
             content=content,
+            reasoning_effort=reasoning_effort,
         )
         expected.append(("user", content))
-        api_key, model, messages = provider.calls[-1]
+        api_key, model, messages, requested_effort = provider.calls[-1]
         assert api_key == API_KEY
         assert model == "requested-model"
+        assert requested_effort == reasoning_effort
         assert [(message.role, message.content) for message in messages] == expected
         get_credential.assert_awaited_with(owner_id, provider.provider_id)
         assert result is provider.response
@@ -332,6 +346,7 @@ async def test_openrouter_wiring_uses_saved_key_and_persists_the_reply(
         conversation_id=conversation_id,
         model="requested-model",
         content=content,
+        reasoning_effort="high",
     )
 
     assert len(requests) == 1
@@ -367,6 +382,7 @@ async def test_openrouter_wiring_uses_saved_key_and_persists_the_reply(
         ],
         "store": False,
         "stream": False,
+        "reasoning": {"effort": "high"},
     }
     assert result == ModelResponse(content=ANSWER, model="returned-model", usage=None)
     assert await persisted_messages(db_session, conversation_id) == [
