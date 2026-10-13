@@ -39,7 +39,8 @@ def main() -> int:
     ):
         parser.error("Expected an origin without credentials, path, query or fragment")
     if parsed.hostname not in ("localhost", "127.0.0.1", "::1") and (
-        parsed.scheme != "https" or Path(args.env_file).resolve() == Path(".env").resolve()
+        parsed.scheme != "https"
+        or Path(args.env_file).resolve() == Path(".env").resolve()
     ):
         parser.error("Remote smoke tests require HTTPS and a separate --env-file")
     config = dotenv_values(args.env_file)
