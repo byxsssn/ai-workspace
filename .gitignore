@@ -11,3 +11,10 @@ wheels/
 
 # Local environment configuration
 .env
+.env.*
+!.env.example
+
+# Frontend dependencies and local verification artifacts
+node_modules/
+*.tsbuildinfo
+.local/

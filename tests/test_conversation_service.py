@@ -5,8 +5,8 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ai_workspace.models import Conversation
-from ai_workspace.repositories import ConversationRepository
+from ai_workspace.models import Conversation, Message
+from ai_workspace.repositories import ConversationRepository, MessageRepository
 from ai_workspace.services import ConversationNotFoundError, ConversationService
 
 
@@ -79,3 +79,28 @@ def test_list_for_user_returns_repository_list() -> None:
 
     assert result is conversations
     service.repository.list_by_user.assert_awaited_with(user_id)
+
+
+def test_list_messages_checks_ownership_before_reading_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id, conversation_id = uuid4(), uuid4()
+    service = ConversationService(AsyncMock(spec=AsyncSession))
+    service.repository = Mock(spec=ConversationRepository)
+    messages = [Message(conversation_id=conversation_id, role="user", content="Hello")]
+    repository = Mock(spec=MessageRepository)
+    repository.list_by_conversation.return_value = messages
+    factory = Mock(return_value=repository)
+    monkeypatch.setattr("ai_workspace.services.conversation.MessageRepository", factory)
+
+    service.repository.get_by_id_for_user.return_value = None
+    with pytest.raises(ConversationNotFoundError):
+        asyncio.run(service.list_messages(conversation_id, user_id))
+    factory.assert_not_called()
+
+    service.repository.get_by_id_for_user.return_value = Conversation(
+        id=conversation_id, user_id=user_id
+    )
+    assert asyncio.run(service.list_messages(conversation_id, user_id)) is messages
+    service.repository.get_by_id_for_user.assert_awaited_with(conversation_id, user_id)
+    repository.list_by_conversation.assert_awaited_once_with(conversation_id)

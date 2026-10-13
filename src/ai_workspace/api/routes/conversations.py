@@ -1,13 +1,17 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_workspace.api.dependencies.auth import get_current_user
 from ai_workspace.db.session import get_db_session
 from ai_workspace.models import User
-from ai_workspace.schemas import ConversationCreateRequest, ConversationResponse
+from ai_workspace.schemas import (
+    ConversationCreateRequest,
+    ConversationResponse,
+    MessageResponse,
+)
 from ai_workspace.services import ConversationNotFoundError, ConversationService
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
@@ -27,6 +31,27 @@ async def create_conversation(
         current_user.id, request.title
     )
     return ConversationResponse.model_validate(conversation)
+
+
+@router.get("/{conversation_id}/messages", response_model=list[MessageResponse])
+async def list_messages(
+    conversation_id: UUID,
+    response: Response,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> list[MessageResponse]:
+    try:
+        messages = await ConversationService(session).list_messages(
+            conversation_id, current_user.id
+        )
+    except ConversationNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conversation not found",
+        ) from exc
+
+    response.headers["Cache-Control"] = "private, no-store"
+    return [MessageResponse.model_validate(message) for message in messages]
 
 
 @router.get("", response_model=list[ConversationResponse])
