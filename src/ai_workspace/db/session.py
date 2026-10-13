@@ -9,7 +9,9 @@ from sqlalchemy.ext.asyncio import (
 
 from ai_workspace.core.config import get_settings
 
-engine: AsyncEngine = create_async_engine(get_settings().database_url)
+engine: AsyncEngine = create_async_engine(
+    get_settings().database_url, pool_pre_ping=True, pool_size=5, max_overflow=5
+)
 
 async_session_factory: async_sessionmaker[AsyncSession] = async_sessionmaker(
     bind=engine,

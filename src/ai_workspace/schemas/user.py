@@ -2,12 +2,13 @@ from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, SecretStr
 
 
 class UserRegisterRequest(BaseModel):
     email: EmailStr
     password: Annotated[str, Field(min_length=8, max_length=128)]
+    invite_code: SecretStr | None = Field(default=None, max_length=256)
 
 
 class UserResponse(BaseModel):
