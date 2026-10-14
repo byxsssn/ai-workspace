@@ -149,10 +149,14 @@ do not run when the workspace hits its usage cap; the daily recovery point is a
 target, not a guarantee. Bucket storage and the short-lived job add resource usage
 to the existing workspace budget. See [bucket pricing](https://railway.com/pricing).
 
-For an immediate backup, run `railway redeploy --service database-backup --yes`
-from this linked project. This reruns the deployed job image. Use `--from-source`
-only when intentionally deploying the current Git source and service configuration.
-Verify the new `backup_complete` log and object before making risky schema changes.
+For an immediate backup, run
+`railway cron run --service database-backup --environment production --yes`
+from this linked project. Track it with
+`railway cron list --service database-backup --environment production --limit 5`.
+This enqueues an execution of the deployed job image; it can take a few minutes to
+appear. Deploying/redeploying a cron service updates its image but does not itself
+prove that the backup job ran. Verify a completed execution, its `backup_complete`
+log, and the new object before making risky schema changes.
 
 Before schema changes with data risk, create a fresh backup and retain a portable
 `pg_dump --format=custom --no-owner` export outside Railway. The PostgreSQL client
@@ -208,8 +212,15 @@ Initial application release: `ade1bb62ee0828339f8c263f36cc57fd3fe0747f`
   database on the isolated local port 55432. All rows matched after normalizing timezones:
   2 users, 3 conversations, 4 messages, 2 provider credentials, revision `47684641df93`.
   Both credentials decrypted with the saved application Fernet key; no orphan messages.
-  Restore plus verification took **3.15 seconds** for this small test dataset. The
-  encrypted export and detailed report are in the access-restricted recovery directory.
+  Restore plus verification took **3.15 seconds** for this small test dataset. An
+  additional export was uploaded to the private bucket, downloaded, SHA-256 checked,
+  authenticated and restored with the same results in **3.17 seconds**. The encrypted
+  exports and detailed reports are in the access-restricted recovery directory.
+- Release `886defe53080c84b001250eedb97660bb62414ad` passed CI (244 backend tests,
+  9 frontend tests/build, both Docker images and a separate encrypted backup restore).
+  After its deployment, the four-message history was identical, both users could
+  log in, credential metadata remained configured and cross-account reads returned
+  404. The retired invite returned 403; the replacement passed invitation validation.
 
 The following checklist must also be completed when publishing subsequent changes:
 
@@ -241,3 +252,4 @@ prints only safe statuses and the conversation ID.
 - [GitHub checks and automatic deployments](https://docs.railway.com/deployments/github-autodeploys)
 - [Pre-deploy migrations](https://docs.railway.com/deployments/pre-deploy-command)
 - [Volume backups](https://docs.railway.com/volumes/backups)
+- [Scheduled jobs and manual runs](https://docs.railway.com/cron-jobs)
