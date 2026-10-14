@@ -12,6 +12,7 @@
 **/*.pyc
 tests
 docs
-scripts
+scripts/*
+!scripts/backup_database.py
 **/*.dump
 **/*.sql

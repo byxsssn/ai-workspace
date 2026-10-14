@@ -6,12 +6,17 @@
 - Project: `ai-workspace`; environment: `production`.
 - Source: `byxsssn/ai-workspace`, branch `main`.
 - Region: Singapore (`asia-southeast1-eqsg3a`) for both services.
-- `ai-workspace`: one replica, 1 vCPU / 0.5 GB maximum, no sleeping, no persistent disk.
+- `ai-workspace`: one replica, 1 vCPU / 512 MB maximum, no sleeping, no persistent disk.
 - `Postgres`: Railway's `postgres` template, image
-  `ghcr.io/railwayapp-templates/postgres-ssl:18`, one replica, 1 vCPU / 0.5 GB maximum.
+  `ghcr.io/railwayapp-templates/postgres-ssl:18`, one replica, 1 vCPU / 512 MB maximum.
   A 5 GB volume mounts at `/var/lib/postgresql/data`; `PGDATA` is the template's
   `/var/lib/postgresql/data/pgdata`.
 - Start with an empty database. Local accounts, messages and provider keys are not imported.
+- `database-backup`: a scheduled job in Singapore, 1 vCPU / 512 MB maximum, no
+  public domain or volume. It exits after each backup. `backup-storage` is a private
+  Singapore bucket. The app has no bucket credentials.
+
+The HTTPS endpoint is https://ai-workspace-production-f76f.up.railway.app.
 
 The Dockerfile builds React with Node 24 and installs locked production dependencies
 with Python 3.14 and uv 0.12.5. It runs as an unprivileged user. Local configuration,
@@ -115,10 +120,39 @@ entry and any required personal authorization must be completed by the account o
 
 ## Backups and recovery
 
-On the Postgres volume's Backups tab enable both **Daily** (6-day retention) and
-**Weekly** (27-day retention). Scheduled backups cost incremental storage. Verify a
-successful backup actually appears; saving a schedule alone is not evidence of a backup.
-This configuration targets roughly 24-hour recovery points between daily snapshots.
+Railway's API rejected native manual/scheduled volume backups on Hobby on
+2026-10-14: they require Pro. The owner chose to retain Hobby and use encrypted
+logical backups. Native volume snapshots are therefore **not enabled**.
+
+`database-backup` builds `Dockerfile.backup` from `main` after CI. Its Railway cron
+is `0 19 * * *` (03:00 Asia/Shanghai the following day). It exports PostgreSQL 18
+using `pg_dump --format=custom --no-owner --no-acl`, verifies the archive, encrypts
+it with AES-256-GCM, and uploads it to `backup-storage`. Monday runs also retain a
+weekly copy; the first run creates both tiers. Daily copies expire after 6 days,
+weekly copies after 27 days. The latest remaining copy in each tier is preserved
+even if a long outage has made it older. Only files matching this job's namespace
+and format can be removed, and cleanup starts only after uploads verify successfully.
+
+The job uses bounded memory and private PostgreSQL references (`PGHOST`, `PGPORT`,
+`PGDATABASE`, `PGUSER`, `PGPASSWORD` from `Postgres`). S3 variables are references to
+`backup-storage.ENDPOINT`, `.BUCKET`, `.REGION`, `.ACCESS_KEY_ID`, and
+`.SECRET_ACCESS_KEY`, named `BACKUP_S3_*` on the job. New Railway buckets use
+virtual-host addressing. The job's `BACKUP_ENCRYPTION_KEY` is an independently
+generated base64-encoded 32-byte key. Preserve it separately from the application
+Fernet key; both are required for complete recovery of user credentials.
+
+Check the job's latest execution for `status: backup_complete` and a daily object
+newer than 24 hours in the bucket. A failed export, upload, or integrity check exits
+nonzero and logs `backup_failed` without printing database or SDK secrets. Inspect
+failed job notifications/logs and manually run the job after fixing it. Cron jobs
+do not run when the workspace hits its usage cap; the daily recovery point is a
+target, not a guarantee. Bucket storage and the short-lived job add resource usage
+to the existing workspace budget. See [bucket pricing](https://railway.com/pricing).
+
+For an immediate backup, run `railway redeploy --service database-backup --yes`
+from this linked project. This reruns the deployed job image. Use `--from-source`
+only when intentionally deploying the current Git source and service configuration.
+Verify the new `backup_complete` log and object before making risky schema changes.
 
 Before schema changes with data risk, create a fresh backup and retain a portable
 `pg_dump --format=custom --no-owner` export outside Railway. The PostgreSQL client
@@ -132,16 +166,52 @@ Compare exact row counts, migration revision, conversation/message relationships
 and decryption of a dedicated test credential using the saved Fernet key. Record
 elapsed restore time and backup age. Do not replace production during the drill.
 
-For a real incident, preserve the current data before recovery. Railway volume
-recovery stages a restored volume for the same project/environment; review it before
-applying. Keep the former volume until validation succeeds. A volume or project
-deletion can also remove its snapshots, so it is not a substitute for an external export.
+Download an encrypted object through the private bucket's Files view or an
+authenticated S3 client. Retain its SHA-256 from the backup log. Decrypt locally:
+
+```text
+uv sync --locked --group backup
+uv run --group backup python scripts/backup_database.py --decrypt <backup.dump.aesgcm> <verified.dump> --key-file <private-backup-key-file>
+pg_restore --exit-on-error --no-owner --no-acl --host 127.0.0.1 --port <isolated-port> --username <restore-user> --dbname <new-empty-database> <verified.dump>
+```
+
+Decryption rejects tampering, an incorrect key, and an existing output path. Never
+put the key itself on the command line. The decrypted archive contains user data:
+keep it in access-restricted storage and retain encrypted copies for long-term use.
+
+For a real incident, preserve current data first, then restore into a new database,
+validate it, and switch the application's private database reference. Preserve the
+application's Fernet key and do not delete the old database until validation succeeds.
+Keep an encrypted export outside this Railway project: deleting a project or bucket
+can also remove its backups. This setup provides logical recovery, not point-in-time
+recovery or a one-click volume snapshot restore.
 
 Roll back an application defect to the prior successful Railway deployment. Do not
 automatically run `alembic downgrade`: application rollback does not reverse schema
 changes. Use backward-compatible migrations; recover database data separately.
 
 ## Launch acceptance
+
+Initial application release: `ade1bb62ee0828339f8c263f36cc57fd3fe0747f`
+([PR #1](https://github.com/byxsssn/ai-workspace/pull/1)). On 2026-10-14:
+
+- The production HTTP check passed, including static assets, readiness and API isolation.
+- Two accounts passed invitation rejection, login, conversation isolation and credential
+  isolation checks. Two real `openai/gpt-6-luna` turns produced four persisted messages;
+  the second answer correctly recalled the first turn's marker. Re-login retained them.
+- The owner confirmed the actual HTTPS domain loaded from a mainland network with
+  proxy/VPN disabled. This is evidence for that network at that time, not all networks.
+- Deployment `337adbdd-a620-48b2-99b9-ab28c654620e` intentionally requested a nonexistent
+  Alembic revision and failed before launch; the prior successful deployment continued
+  serving. The configured command was restored to `alembic upgrade head` afterward.
+- A production export was authenticated/decrypted and restored into a new PostgreSQL 18
+  database on the isolated local port 55432. All rows matched after normalizing timezones:
+  2 users, 3 conversations, 4 messages, 2 provider credentials, revision `47684641df93`.
+  Both credentials decrypted with the saved application Fernet key; no orphan messages.
+  Restore plus verification took **3.15 seconds** for this small test dataset. The
+  encrypted export and detailed report are in the access-restricted recovery directory.
+
+The following checklist must also be completed when publishing subsequent changes:
 
 - Verify the HTTPS domain from the actual mainland network used by invitees.
 - Register and sign in with an invite, then enter an OpenRouter key through the UI.
