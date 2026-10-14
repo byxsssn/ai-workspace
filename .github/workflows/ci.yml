@@ -42,7 +42,7 @@ jobs:
       - name: Install locked Python dependencies
         run: |
           python -m pip install uv==0.12.5
-          uv sync --locked
+          uv sync --locked --group backup
       - name: Generate disposable test encryption key
         run: |
           uv run python - <<'PY'
@@ -65,6 +65,33 @@ jobs:
           npm run build
       - name: Build production image
         run: docker build -t ai-workspace:ci .
+      - name: Verify encrypted backup image and isolated restore
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: '5432'
+          PGUSER: test
+          PGPASSWORD: test
+          PGDATABASE: ai_workspace_test
+        run: |
+          docker build -f Dockerfile.backup -t ai-workspace-backup:ci .
+          export BACKUP_ENCRYPTION_KEY="$(uv run python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+          mkdir -p "$RUNNER_TEMP/backup-smoke"
+          chmod 777 "$RUNNER_TEMP/backup-smoke"
+          docker run --rm --network host \
+            -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD -e PGDATABASE -e BACKUP_ENCRYPTION_KEY \
+            -v "$RUNNER_TEMP/backup-smoke:/backup" ai-workspace-backup:ci \
+            /app/.venv/bin/python /app/scripts/backup_database.py --local-backup /backup/test.dump.aesgcm
+          docker run --rm -e BACKUP_ENCRYPTION_KEY \
+            -v "$RUNNER_TEMP/backup-smoke:/backup" ai-workspace-backup:ci \
+            /app/.venv/bin/python /app/scripts/backup_database.py --decrypt /backup/test.dump.aesgcm /backup/test.dump
+          docker run --rm --network host -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD \
+            ai-workspace-backup:ci createdb ai_workspace_restore_probe
+          docker run --rm --network host -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD \
+            -v "$RUNNER_TEMP/backup-smoke:/backup:ro" ai-workspace-backup:ci \
+            pg_restore --exit-on-error --no-owner --no-acl --dbname ai_workspace_restore_probe /backup/test.dump
+          docker run --rm --network host -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD \
+            ai-workspace-backup:ci psql --dbname ai_workspace_restore_probe --set ON_ERROR_STOP=1 \
+            --command 'SELECT version_num FROM alembic_version;'
       - name: Verify production image and migrations
         env:
           AI_WORKSPACE_REGISTRATION_INVITE_CODE: ci-only-not-a-production-invitation-123456
