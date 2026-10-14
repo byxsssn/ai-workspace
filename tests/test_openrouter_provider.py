@@ -243,8 +243,8 @@ def test_invalid_usage_does_not_discard_a_valid_answer(usage: object) -> None:
 
 @pytest.mark.parametrize("input_tokens, expected", [("12", 12), (True, 1)])
 def test_usage_accepts_sdk_normalization(input_tokens: object, expected: int) -> None:
-    # A complete usage object is normalized by the SDK's typed model. The
-    # adapter validates that result without re-reading the original JSON.
+    # 完整用量对象由 SDK 的类型模型规范化；
+    # 适配器直接校验该结果，不重新读取原始 JSON。
     payload = {
         **response_payload(),
         "usage": {
@@ -392,7 +392,7 @@ def test_invalid_upstream_responses_raise_safe_provider_errors(
     def handle(_: httpx2.Request) -> httpx2.Response:
         if isinstance(payload, str):
             return httpx2.Response(200, content=payload)
-        # Explicit JSON handles null as well as SDK-invalid field shapes.
+        # 显式构造 JSON，以覆盖 null 和不符合 SDK 结构的字段。
         return httpx2.Response(
             200,
             content=json.dumps(payload),

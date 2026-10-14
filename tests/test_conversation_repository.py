@@ -1,7 +1,7 @@
-"""Integration tests requiring configured PostgreSQL and applied migrations.
+"""集成测试需要配置 PostgreSQL 并完成迁移。
 
-Each test rolls back its outer transaction; session savepoints prevent an
-accidental repository commit from persisting test users or conversations.
+每个测试都会回滚外层事务；会话保存点可防止仓储层意外提交后
+将测试用户或会话永久写入数据库。
 """
 
 from collections.abc import AsyncIterator

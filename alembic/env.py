@@ -5,7 +5,7 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from ai_workspace import models  # noqa: F401 - register models on Base.metadata
+from ai_workspace import models  # noqa: F401 - 将模型注册到 Base.metadata
 from ai_workspace.core.config import get_settings
 from ai_workspace.db.base import Base
 from alembic import context
@@ -20,7 +20,7 @@ target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
-    """Generate SQL without connecting to the database."""
+    """不连接数据库，仅生成 SQL。"""
     context.configure(
         url=database_url,
         target_metadata=target_metadata,
@@ -49,7 +49,7 @@ async def run_async_migrations() -> None:
 
 
 def run_migrations_online() -> None:
-    """Run Alembic using an async database connection."""
+    """通过异步数据库连接执行 Alembic 迁移。"""
     asyncio.run(run_async_migrations())
 
 

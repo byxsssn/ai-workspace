@@ -1,4 +1,4 @@
-"""Exercise application logging in isolation, including SDK import-time settings."""
+"""在独立进程中验证应用日志策略，包括 SDK 导入时的配置。"""
 
 import os
 import subprocess

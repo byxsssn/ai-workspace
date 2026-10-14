@@ -1,4 +1,4 @@
-"""Same-origin production composition. Start with Uvicorn's --factory option."""
+"""同源生产入口，使用 Uvicorn 的 --factory 选项启动。"""
 
 import asyncio
 from collections.abc import AsyncIterator
@@ -61,7 +61,7 @@ def create_app() -> FastAPI:
         try:
             async with asyncio.timeout(2):
                 await check_database()
-        except Exception:  # noqa: BLE001 - probe errors may contain database credentials.
+        except Exception:  # noqa: BLE001 - 探测异常可能包含数据库凭据。
             return JSONResponse({"status": "unavailable"}, status_code=503)
         return JSONResponse({"status": "ok"})
 

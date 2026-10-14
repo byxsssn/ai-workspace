@@ -7,7 +7,7 @@ from ai_workspace.repositories import ConversationRepository, MessageRepository
 
 
 class ConversationNotFoundError(Exception):
-    """The conversation is unavailable to the specified user."""
+    """指定用户无法访问该会话。"""
 
 
 class ConversationService:
@@ -46,7 +46,7 @@ class ConversationService:
     async def list_messages(
         self, conversation_id: UUID, user_id: UUID
     ) -> list[Message]:
-        # Check ownership before querying messages; foreign and missing IDs are 404.
+        # 查询消息前先检查归属；其他用户的会话和不存在的会话统一返回 404。
         await self.get(conversation_id, user_id)
         return await MessageRepository(self.session).list_by_conversation(
             conversation_id

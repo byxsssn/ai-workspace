@@ -77,7 +77,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it("restores the selected conversation and history after a page remount, then clears the session on logout", async () => {
+it("页面重新挂载后恢复会话和历史，退出时清除登录状态", async () => {
   mockApi();
   sessionStorage.setItem("ai-workspace:user-1:conversation", "second");
   const page = render(<App />);
@@ -96,14 +96,14 @@ it("restores the selected conversation and history after a page remount, then cl
   expect(screen.getByLabelText("密码")).toBeTruthy();
 });
 
-it("clears expired JWTs and shows login", async () => {
+it("清除过期 JWT 并显示登录页", async () => {
   mockApi((url) => (url === "/api/users/me" ? json({}, 401) : undefined));
   render(<App />);
   await screen.findByText("登录已失效，请重新登录。");
   expect(sessionStorage.getItem("ai-workspace:token")).toBeNull();
 });
 
-it("keeps newer history when a slow response arrives after switching conversations", async () => {
+it("切换会话后收到旧响应时仍保留新会话历史", async () => {
   let resolveFirst!: (response: Response) => void;
   const slow = new Promise<Response>((resolve) => {
     resolveFirst = resolve;
@@ -132,7 +132,7 @@ it("keeps newer history when a slow response arrives after switching conversatio
   expect(screen.getByText("New history")).toBeTruthy();
 });
 
-it("prevents duplicate sends, preserves drafts on failure, and renders model HTML as text", async () => {
+it("防止重复发送，失败时保留草稿，并将模型 HTML 作为纯文本展示", async () => {
   let resolveChat!: (response: Response) => void;
   const pending = new Promise<Response>((resolve) => {
     resolveChat = resolve;
@@ -164,16 +164,16 @@ it("prevents duplicate sends, preserves drafts on failure, and renders model HTM
   );
 });
 
-it("clears the API Key field after submission without putting it in browser storage", async () => {
+it("提交后清空 API 密钥输入框，且不写入浏览器存储", async () => {
   const fetchMock = mockApi();
   render(<App />);
   await screen.findByText("Saved answer");
   await screen.findByText("已配置");
-  await userEvent.type(screen.getByLabelText("替换 API Key"), "dummy-test-key");
+  await userEvent.type(screen.getByLabelText("替换 API 密钥"), "dummy-test-key");
   await userEvent.click(screen.getByRole("button", { name: "保存密钥" }));
-  await screen.findByText("API Key 已保存。");
+  await screen.findByText("API 密钥已保存。");
   expect(
-    (screen.getByLabelText("替换 API Key") as HTMLInputElement).value,
+    (screen.getByLabelText("替换 API 密钥") as HTMLInputElement).value,
   ).toBe("");
   expect(JSON.stringify(sessionStorage)).not.toContain("dummy-test-key");
   expect(localStorage.length).toBe(0);

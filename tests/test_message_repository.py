@@ -1,4 +1,4 @@
-"""PostgreSQL integration test; all test rows are rolled back."""
+"""PostgreSQL 集成测试；所有测试数据都会回滚。"""
 
 import asyncio
 from datetime import datetime, timedelta

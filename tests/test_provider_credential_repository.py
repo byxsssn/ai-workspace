@@ -1,4 +1,4 @@
-"""PostgreSQL repository test with all rows isolated in a rolled-back transaction."""
+"""PostgreSQL 仓储测试；所有测试数据隔离在最终回滚的事务中。"""
 
 from collections.abc import AsyncIterator
 from unittest.mock import Mock

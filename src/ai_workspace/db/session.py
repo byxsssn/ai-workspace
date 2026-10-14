@@ -21,6 +21,6 @@ async_session_factory: async_sessionmaker[AsyncSession] = async_sessionmaker(
 
 
 async def get_db_session() -> AsyncGenerator[AsyncSession]:
-    """Yield a session without committing; the caller manages transactions."""
+    """提供数据库会话，由调用方管理事务，不在此处提交。"""
     async with async_session_factory() as session:
         yield session

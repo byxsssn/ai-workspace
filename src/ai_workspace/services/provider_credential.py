@@ -9,7 +9,7 @@ from ai_workspace.repositories import ProviderCredentialRepository
 
 
 class ProviderCredentialNotFoundError(Exception):
-    """The provider credential is unavailable to the specified user."""
+    """指定用户没有可用的供应商凭据。"""
 
 
 class ProviderCredentialService:
@@ -20,7 +20,7 @@ class ProviderCredentialService:
     async def set_api_key(
         self, user_id: UUID, provider: ProviderId, api_key: str
     ) -> ProviderCredential:
-        """Create or replace the user's encrypted API key for this provider."""
+        """创建或替换该用户在此供应商下的加密 API 密钥。"""
         try:
             credential = await self.repository.get_by_user_and_provider(
                 user_id, provider.value

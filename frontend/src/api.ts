@@ -17,16 +17,16 @@ export class ApiError extends Error {
   }
 }
 
-// Only known messages are displayed. Never echo raw validation inputs or upstream bodies.
+// 仅将已知接口错误映射为中文文案，不回显校验输入或上游响应体。
 const safeDetails: Record<string, string> = {
   "Invalid email or password": "邮箱或密码错误。",
   "Email is already registered": "该邮箱已注册，请直接登录。",
   "Invalid invitation code": "邀请码无效，请向邀请人获取有效邀请码。",
   "User is inactive": "该账号已停用。",
-  "Provider credential not configured": "请先配置 OpenRouter API Key。",
+  "Provider credential not configured": "请先配置 OpenRouter API 密钥。",
   "Conversation not found": "会话不存在或无权访问，请重新选择会话。",
   "Chat provider request failed":
-    "模型服务请求失败，请检查 API Key、额度和模型名称。",
+    "模型服务请求失败，请检查 API 密钥、额度和模型名称。",
 };
 
 export function errorMessage(error: unknown): string {

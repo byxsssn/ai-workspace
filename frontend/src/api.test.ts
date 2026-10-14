@@ -3,8 +3,8 @@ import { createApi } from "./api";
 
 afterEach(() => vi.unstubAllGlobals());
 
-describe("API boundary", () => {
-  it("uses same-origin proxy, bearer auth and the exact non-streaming chat contract", async () => {
+describe("API 请求边界", () => {
+  it("使用同源代理、Bearer 鉴权和约定的非流式聊天字段", async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValue(
@@ -32,7 +32,7 @@ describe("API boundary", () => {
     });
   });
 
-  it("does not display reflected secrets in validation errors", async () => {
+  it("不展示校验错误中回显的密钥", async () => {
     vi.stubGlobal(
       "fetch",
       vi
@@ -49,7 +49,7 @@ describe("API boundary", () => {
     ).rejects.toThrow("输入不符合要求");
   });
 
-  it("invalidates authenticated sessions on 401, without retrying a request", async () => {
+  it("遇到 401 清除登录状态且不重试请求", async () => {
     const expired = vi.fn();
     const fetchMock = vi
       .fn()

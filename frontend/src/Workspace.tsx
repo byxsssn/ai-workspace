@@ -180,7 +180,7 @@ export function Workspace({
                 value={model}
                 onChange={(event) => setModel(event.target.value)}
                 disabled={sending}
-                placeholder="provider/model"
+                placeholder="例如 openai/gpt-6-luna"
                 autoComplete="off"
                 spellCheck={false}
               />

@@ -1,177 +1,172 @@
-# Railway deployment and recovery
+# Railway 部署与恢复
 
-## Deployment layout
+## 部署结构
 
-- Workspace: **byxsss's Projects** (`d143b5d6-2692-4b83-bff3-9e5c1aecfbd4`).
-- Project: `ai-workspace`; environment: `production`.
-- Source: `byxsssn/ai-workspace`, branch `main`.
-- Region: Singapore (`asia-southeast1-eqsg3a`) for both services.
-- `ai-workspace`: one replica, 1 vCPU / 512 MB maximum, no sleeping, no persistent disk.
-- `Postgres`: Railway's `postgres` template, image
-  `ghcr.io/railwayapp-templates/postgres-ssl:18`, one replica, 1 vCPU / 512 MB maximum.
-  A 5 GB volume mounts at `/var/lib/postgresql/data`; `PGDATA` is the template's
-  `/var/lib/postgresql/data/pgdata`.
-- Start with an empty database. Local accounts, messages and provider keys are not imported.
-- `database-backup`: a scheduled job in Singapore, 1 vCPU / 512 MB maximum, no
-  public domain or volume. It exits after each backup. `backup-storage` is a private
-  Singapore bucket. The app has no bucket credentials.
+- 工作区：**byxsss's Projects**（`d143b5d6-2692-4b83-bff3-9e5c1aecfbd4`）。
+- 项目：`ai-workspace`；环境：`production`。
+- 代码来源：`byxsssn/ai-workspace` 的 `main` 分支。
+- 应用与数据库区域：新加坡（`asia-southeast1-eqsg3a`）。
+- `ai-workspace`：一个副本，资源上限为 1 vCPU、512 MB，关闭休眠，不挂载持久卷。
+- `Postgres`：使用 Railway 的 `postgres` 模板和镜像
+  `ghcr.io/railwayapp-templates/postgres-ssl:18`，一个副本，上限为 1 vCPU、512 MB。
+  5 GB 持久卷挂载到 `/var/lib/postgresql/data`，模板中的 `PGDATA` 为
+  `/var/lib/postgresql/data/pgdata`。
+- 首次上线从空数据库开始，没有导入本地账号、消息或供应商密钥。
+- `database-backup`：新加坡定时任务，上限为 1 vCPU、512 MB，无公网域名或持久卷，
+  每次备份结束后退出。`backup-storage` 是新加坡私有存储桶，应用服务不持有桶凭据。
 
-The HTTPS endpoint is https://ai-workspace-production-f76f.up.railway.app.
+线上地址：[AI Workspace](https://ai-workspace-production-f76f.up.railway.app/)。
 
-The Dockerfile builds React with Node 24 and installs locked production dependencies
-with Python 3.14 and uv 0.12.5. It runs as an unprivileged user. Local configuration,
-test artifacts and credentials are excluded from the build context.
+Dockerfile 使用 Node.js 24 构建前端，用 Python 3.14 和 uv 0.12.5 安装锁定的生产依赖，
+并以非特权用户运行。本地配置、测试产物和凭据不会进入构建上下文。
 
-The production ASGI factory is `ai_workspace.production:create_app`. It serves
-`/`, `/assets/*` and the existing backend under `/api`. Unknown paths return 404;
-there is no SPA catch-all for API paths. `/readyz` checks PostgreSQL within 2 seconds
-and returns only a safe status. Production disables debug, OpenAPI and API docs.
-Local development still uses `ai_workspace.main:app` and the Vite proxy.
+生产 ASGI 工厂为 `ai_workspace.production:create_app`，提供首页 `/`、静态资源
+`/assets/*`，并将后端挂载到 `/api`。未知路径返回 404，API 路径不会回退到网页。
+`/readyz` 在 2 秒内检查 PostgreSQL，只返回安全状态；生产关闭调试、OpenAPI 和接口文档。
+本地开发继续使用 `ai_workspace.main:app` 和 Vite 代理。
 
-## Service variables
+## 服务变量与密钥保管
 
-Configure these on the application service, not in source or frontend variables:
+在应用服务的 Variables 页面配置以下变量：
 
-| Variable | Value / purpose |
+| 变量 | 值或用途 |
 | --- | --- |
-| `AI_WORKSPACE_ENVIRONMENT` | `production` |
-| `AI_WORKSPACE_DEBUG` | `false` |
-| `AI_WORKSPACE_DATABASE_URL` | `${{Postgres.DATABASE_URL}}` — private network reference |
-| `AI_WORKSPACE_JWT_SECRET_KEY` | Independent random value, at least 32 characters |
-| `AI_WORKSPACE_CREDENTIAL_ENCRYPTION_KEY` | A newly generated `Fernet.generate_key()` value |
-| `AI_WORKSPACE_REGISTRATION_INVITE_CODE` | Independent random shared invite, at least 32 characters |
-| `AI_WORKSPACE_JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | `30` |
+| `AI_WORKSPACE_ENVIRONMENT` | `production`。 |
+| `AI_WORKSPACE_DEBUG` | `false`。 |
+| `AI_WORKSPACE_DATABASE_URL` | `${{Postgres.DATABASE_URL}}`，通过私有网络引用数据库。 |
+| `AI_WORKSPACE_JWT_SECRET_KEY` | 独立生成的随机值，至少 32 字符。 |
+| `AI_WORKSPACE_CREDENTIAL_ENCRYPTION_KEY` | 单独用 `Fernet.generate_key()` 生成的加密主密钥。 |
+| `AI_WORKSPACE_REGISTRATION_INVITE_CODE` | 独立生成的共享邀请码，至少 32 字符。 |
+| `AI_WORKSPACE_JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | `30`。 |
 
-`PORT` is supplied by Railway. The image defaults the frontend directory to
-`/app/frontend/dist`. The application normalizes `postgres://` and `postgresql://`
-to the asyncpg driver without reconstructing credentials by hand. Alembic uses
-the same settings and connection normalization.
+`PORT` 由 Railway 提供。镜像默认前端目录为 `/app/frontend/dist`。
+应用会将 `postgres://` 和 `postgresql://` 统一为 asyncpg 连接地址，保留凭据的正确编码；
+Alembic 使用同一套配置和转换逻辑。
 
-Generate production secrets independently of development values, transfer them
-directly into Railway variables, and retain an access-restricted recovery copy.
-Local recovery files belong in ignored `.local/`, never in Git or build inputs.
-Move the long-term copy into your password manager. In particular, losing the
-Fernet key makes saved OpenRouter keys unreadable even if the database is restored.
-Do not regenerate that key on redeployment. A future encryption-key rotation must
-re-encrypt existing credentials before retiring the old key.
+生产密钥应独立于开发环境生成，直接写入 Railway 变量，并保留限制访问权限的恢复副本。
+本机恢复资料放在 Git 忽略的 `.local/` 下，长期副本请另存至密码管理器或受保护介质。
+**即使数据库已经恢复，丢失 Fernet 主密钥仍会导致已保存的 OpenRouter 密钥无法解密。**
+重新部署时保留原主密钥。今后如需轮换，必须先重新加密现有凭据，再停用旧主密钥。
 
-Users enter their own OpenRouter keys in the application. There is no shared
-server-side provider key. Do not upload the local development `.env` to Railway.
+用户在应用中填写自己的 OpenRouter 密钥，服务端没有共享的模型调用密钥。
+不要将本地开发 `.env` 上传到 Railway，也不要将秘密写入源码或前端变量。
 
-## Invitations
+## 邀请码管理
 
-Registration accepts `{email, password, invite_code}`. In production, a missing or
-incorrect code returns 403 before password hashing or user creation. Invalid input
-responses omit submitted values. The code is not stored in the database, browser
-storage, logs or build output. The frontend build contains only the public flag
-`VITE_REGISTRATION_REQUIRES_INVITE=true`.
+注册接口接收 `{email, password, invite_code}`。生产环境中，缺少或错误的邀请码会在
+密码哈希计算、创建用户之前返回 403。输入校验错误不回显提交的值。
+邀请码不写入数据库、浏览器存储、日志或构建产物。
+前端仅包含公开开关 `VITE_REGISTRATION_REQUIRES_INVITE=true`。
 
-To rotate the invite, replace `AI_WORKSPACE_REGISTRATION_INVITE_CODE` with another
-random value and redeploy the app. Privately give the new code to future invitees.
-Existing accounts, passwords and sessions continue working. The shared invite is
-reusable and has no per-user quota; this first release is intended for a small
-trusted group. The app currently has no password-reset or email-verification flow.
+更换邀请码时，在应用变量中将 `AI_WORKSPACE_REGISTRATION_INVITE_CODE` 替换为新的
+随机值，发布变量变更，并同步更新恢复副本。将新邀请码私下发给后续受邀用户即可。
+已有账号、密码和登录状态不受影响。邀请码可重复使用，没有按用户设置额度；
+首版适用于少量可信用户，目前不提供密码重置或邮箱验证流程。
 
-## Release process
+## 发布与回退
 
-1. Create a branch and PR. CI runs on PRs and on pushes to `main`.
-2. CI checks Python lint/format, all backend tests against an isolated PostgreSQL 18
-   service, frontend tests/build, and the production Docker image. It uses dummy
-   test credentials and never uses the production database or calls a model.
-3. Merge only the tested commit. Railway follows `main` with **Wait for CI** enabled.
-   Do not cancel in-progress `main` checks. If the GitHub app lacks repository or
-   checks access, complete its authorization before connecting the service.
-4. Configure pre-deploy command `alembic upgrade head`, timeout **300 seconds**.
-   Migrations execute inside the private network after build, before traffic moves.
-   Never run migrations during Docker build or independently in every web worker.
-5. Use the Dockerfile CMD (one Uvicorn worker, bind `0.0.0.0:$PORT`). Set health path
-   `/readyz`, health timeout **120 seconds**, restart policy **ON_FAILURE**, maximum
-   **10 retries**, and application draining **90 seconds** for in-flight chat.
-6. Configure variables and service settings before attaching the source. After the
-   first healthy deployment, generate its Railway HTTPS domain and run:
+1. 在 `codex/` 分支修改代码并创建 PR。PR 和推送到 `main` 都会触发 CI。
+2. CI 检查 Python 代码与格式，在独立 PostgreSQL 18 上运行完整后端测试，
+   并验证前端测试、构建、生产镜像和备份镜像。测试使用虚拟凭据，不访问生产库或真实模型。
+3. 测试通过后合并相应提交。Railway 跟踪 `main`，开启 **Wait for CI（等待 CI）**。
+   不要取消正在运行的 `main` 检查。连接服务前应确认 GitHub App 已获得该仓库及检查权限。
+4. 发布前命令为 `alembic upgrade head`，超时 **300 秒**。
+   迁移在构建完成后、流量切换前通过私有网络执行；不要在镜像构建期间执行迁移，
+   也不要让每个 Web 工作进程分别执行迁移。
+5. 使用 Dockerfile 的 CMD：一个 Uvicorn 工作进程，监听 `0.0.0.0:$PORT`。
+   健康检查路径 `/readyz`，超时 **120 秒**；重启策略 **ON_FAILURE**，最多 **10 次**；
+   应用下线等待时间为 **90 秒**，为进行中的聊天请求留出完成时间。
+6. 先配置变量和服务设置，再连接代码来源。首次健康部署后生成 Railway HTTPS 域名，运行：
 
    ```text
    uv run python scripts/check_deployment.py https://<application-domain>
    ```
 
-7. Verify the active commit, the domain and the absence of runtime failures. A build,
-   migration or readiness failure must not replace the last working deployment.
+7. 核实当前提交、域名和运行日志。构建、迁移或就绪检查失败时，新版本不得替换上一成功版本。
 
-Deploy settings are maintained through Railway and recorded here. No legacy
-`railway.json`/`railway.toml` is introduced; Railway now deprecates Config as Code.
-Use the current Infrastructure as Code system if the project later needs a fully
-declarative multi-environment setup.
+部署设置通过 Railway 管理，并记录在此文档中。仓库没有引入旧的
+`railway.json`／`railway.toml`；Railway 已将旧版 Config as Code 标记为弃用。
+后续需要多环境声明式配置时，再评估其当前的 Infrastructure as Code 方案。
 
-Railway health checks gate deployments; they are not continuous uptime monitoring.
-During this limited launch, inspect runtime logs, restart events, CPU, memory,
-database disk use and spend in the Railway dashboard. Never enable verbose SDK
-logging or include request bodies, Authorization headers or plaintext credentials.
+Railway 健康检查用于发布准入，不代表持续可用性监控。
+小规模试用期间，可在控制台检查运行日志、重启事件、CPU、内存、数据库磁盘和费用。
+日志中不要包含请求体、Authorization 头或明文凭据，也不要开启详细 SDK 日志。
 
-## Budget
+应用故障时，在 Railway 的 Deployments 中选择上一成功版本回退，并核实该版本的变量和邀请码。
+应用回退不会撤销数据库结构变更，**不要自动运行 `alembic downgrade`**。
+采用兼容旧版应用的迁移；数据库数据恢复按下文单独处理。
 
-Use **Hobby**, minimum $5 monthly usage, including $5 usage credit. On this workspace's
-Usage page set the **Compute Usage** email alert to **$15** and hard limit to **$20**.
-The limit covers the entire workspace and takes all workloads offline at the limit.
-It is a resource-usage limit, not a cap on model calls, taxes or unrelated services.
-Keep Railway Agent usage separate; this application does not require Railway Agent.
+## 费用控制
 
-Confirm the two thresholds in the UI after saving. Account payment, billing-method
-entry and any required personal authorization must be completed by the account owner.
+使用 **Hobby**：最低每月 5 美元，包含 5 美元资源额度。
+在工作区 Usage 页将 **Compute Usage** 邮件提醒设置为 **15 美元**，硬上限设置为 **20 美元**。
+这个上限作用于整个工作区，触顶后所有工作负载都会停止，备份任务也会受到影响。
+模型费用、税费和其他服务费用另计。Railway Agent 用量单独管理，本应用无需 Railway Agent。
 
-## Backups and recovery
+保存后应在页面上确认两个阈值。付款方式和平台要求的个人授权由账号所有者完成。
 
-Railway's API rejected native manual/scheduled volume backups on Hobby on
-2026-10-14: they require Pro. The owner chose to retain Hobby and use encrypted
-logical backups. Native volume snapshots are therefore **not enabled**.
+## 备份与恢复
 
-`database-backup` builds `Dockerfile.backup` from `main` after CI. Its Railway cron
-is `0 19 * * *` (03:00 Asia/Shanghai the following day). It exports PostgreSQL 18
-using `pg_dump --format=custom --no-owner --no-acl`, verifies the archive, encrypts
-it with AES-256-GCM, and uploads it to `backup-storage`. Monday runs also retain a
-weekly copy; the first run creates both tiers. Daily copies expire after 6 days,
-weekly copies after 27 days. The latest remaining copy in each tier is preserved
-even if a long outage has made it older. Only files matching this job's namespace
-and format can be removed, and cleanup starts only after uploads verify successfully.
+2026-10-14，Railway 实际 API 拒绝在 Hobby 上创建原生手动／定时卷备份，要求升级 Pro。
+按已确认的方案保留 Hobby，使用加密逻辑备份，**未启用原生卷快照**。
 
-The job uses bounded memory and private PostgreSQL references (`PGHOST`, `PGPORT`,
-`PGDATABASE`, `PGUSER`, `PGPASSWORD` from `Postgres`). S3 variables are references to
-`backup-storage.ENDPOINT`, `.BUCKET`, `.REGION`, `.ACCESS_KEY_ID`, and
-`.SECRET_ACCESS_KEY`, named `BACKUP_S3_*` on the job. New Railway buckets use
-virtual-host addressing. The job's `BACKUP_ENCRYPTION_KEY` is an independently
-generated base64-encoded 32-byte key. Preserve it separately from the application
-Fernet key; both are required for complete recovery of user credentials.
+### 自动备份
 
-Check the job's latest execution for `status: backup_complete` and a daily object
-newer than 24 hours in the bucket. A failed export, upload, or integrity check exits
-nonzero and logs `backup_failed` without printing database or SDK secrets. Inspect
-failed job notifications/logs and manually run the job after fixing it. Cron jobs
-do not run when the workspace hits its usage cap; the daily recovery point is a
-target, not a guarantee. Bucket storage and the short-lived job add resource usage
-to the existing workspace budget. See [bucket pricing](https://railway.com/pricing).
+`database-backup` 在 CI 通过后从 `main` 构建 `Dockerfile.backup`。
+Railway 定时表达式为 `0 19 * * *`（UTC），对应北京时间次日 **03:00**。
+任务使用 PostgreSQL 18 的 `pg_dump --format=custom --no-owner --no-acl` 导出并校验归档，
+再用 AES-256-GCM 加密并上传到私有桶 `backup-storage`。
 
-For an immediate backup, run
-`railway cron run --service database-backup --environment production --yes`
-from this linked project. Track it with
-`railway cron list --service database-backup --environment production --limit 5`.
-This enqueues an execution of the deployed job image; it can take a few minutes to
-appear. Deploying/redeploying a cron service updates its image but does not itself
-prove that the backup job ran. Verify a completed execution, its `backup_complete`
-log, and the new object before making risky schema changes.
+每日副本保留 **6 天**；每周一额外保留周副本，保留 **27 天**；首次运行同时建立两类副本。
+如果长期停机导致副本过期，仍保留每类最后一份。清理仅匹配本任务命名空间和格式的文件，
+并且只在本轮所需上传与元信息校验全部成功后执行。
 
-Before schema changes with data risk, create a fresh backup and retain a portable
-`pg_dump --format=custom --no-owner` export outside Railway. The PostgreSQL client
-major version must match the server. Use an authenticated CLI tunnel for access,
-or run the export in the private network. Do not make the database publicly reachable
-just for convenience. Feed credentials using process variables or an access-restricted
-password file rather than putting them in command history.
+任务限制内存使用，通过 `Postgres` 的变量引用获得 `PGHOST`、`PGPORT`、`PGDATABASE`、
+`PGUSER` 和 `PGPASSWORD`。存储配置使用下表中的引用：
 
-For a restore drill, restore the export into an isolated PostgreSQL 18 database.
-Compare exact row counts, migration revision, conversation/message relationships,
-and decryption of a dedicated test credential using the saved Fernet key. Record
-elapsed restore time and backup age. Do not replace production during the drill.
+| 备份任务变量 | 引用 |
+| --- | --- |
+| `BACKUP_S3_ENDPOINT` | `${{backup-storage.ENDPOINT}}` |
+| `BACKUP_S3_BUCKET` | `${{backup-storage.BUCKET}}` |
+| `BACKUP_S3_REGION` | `${{backup-storage.REGION}}` |
+| `BACKUP_S3_ACCESS_KEY_ID` | `${{backup-storage.ACCESS_KEY_ID}}` |
+| `BACKUP_S3_SECRET_ACCESS_KEY` | `${{backup-storage.SECRET_ACCESS_KEY}}` |
 
-Download an encrypted object through the private bucket's Files view or an
-authenticated S3 client. Retain its SHA-256 from the backup log. Decrypt locally:
+新建 Railway 桶采用虚拟主机寻址方式。`BACKUP_ENCRYPTION_KEY` 为单独生成并经过
+Base64 编码的 32 字节密钥。它与应用 Fernet 主密钥分别保管；
+完整恢复用户凭据时，两者都需要。
+
+检查最近一次执行日志是否包含 `status: backup_complete`，并确认桶内有 24 小时内的每日文件。
+导出、上传或完整性检查失败时，任务以非零状态退出，记录 `backup_failed`，
+不输出数据库凭据或 SDK 敏感信息。修复后手动运行任务，并核实结果。
+工作区触及费用硬上限时，任务无法运行，因此每日恢复点是目标而非保证。
+私有桶和短时任务会增加工作区资源用量，参见[存储桶价格](https://railway.com/pricing)。
+
+### 立即备份
+
+在已连接 Railway 项目的仓库目录运行：
+
+```powershell
+railway cron run --service database-backup --environment production --yes
+railway cron list --service database-backup --environment production --limit 5
+```
+
+该命令将已部署任务镜像加入执行队列，记录可能需要几分钟才出现。
+部署或重新部署定时服务仅更新镜像，不能据此判断备份已经执行。
+进行有数据风险的结构变更前，确认执行已完成、日志包含 `backup_complete`，且桶中已有新文件。
+
+同时保留一份可移植的 `pg_dump --format=custom --no-owner` 加密导出在 Railway 项目之外。
+PostgreSQL 客户端主版本需与服务端一致。使用已授权 CLI 隧道，或在私有网络内执行导出；
+不要为此开放数据库公网端口。凭据通过进程环境变量或限制访问的密码文件提供，
+不要将其直接写入命令历史。
+
+### 隔离恢复演练
+
+将导出恢复到独立的空 PostgreSQL 18 数据库，检查精确行数、迁移版本、会话与消息关联，
+并使用保存的 Fernet 主密钥解密专用测试凭据。记录恢复耗时和备份时间，演练不替换生产库。
+
+通过私有桶的 Files 页面或已认证 S3 客户端下载加密文件，并对照备份日志中的 SHA-256。
+在本机执行以下命令，将占位符替换为实际路径和隔离数据库信息：
 
 ```text
 uv sync --locked --group backup
@@ -179,77 +174,72 @@ uv run --group backup python scripts/backup_database.py --decrypt <backup.dump.a
 pg_restore --exit-on-error --no-owner --no-acl --host 127.0.0.1 --port <isolated-port> --username <restore-user> --dbname <new-empty-database> <verified.dump>
 ```
 
-Decryption rejects tampering, an incorrect key, and an existing output path. Never
-put the key itself on the command line. The decrypted archive contains user data:
-keep it in access-restricted storage and retain encrypted copies for long-term use.
+解密会拒绝被篡改的文件、错误密钥以及已存在的输出路径。
+密钥通过文件提供，不要把密钥值直接放到命令行中。
+解密后的归档包含用户数据，应保存在限制访问的目录；长期保留加密副本。
 
-For a real incident, preserve current data first, then restore into a new database,
-validate it, and switch the application's private database reference. Preserve the
-application's Fernet key and do not delete the old database until validation succeeds.
-Keep an encrypted export outside this Railway project: deleting a project or bucket
-can also remove its backups. This setup provides logical recovery, not point-in-time
-recovery or a one-click volume snapshot restore.
+### 实际故障恢复
 
-Roll back an application defect to the prior successful Railway deployment. Do not
-automatically run `alembic downgrade`: application rollback does not reverse schema
-changes. Use backward-compatible migrations; recover database data separately.
+先保留当前数据，再恢复到新数据库，完成验证后切换应用的私有数据库引用。
+保留原应用 Fernet 主密钥，验证成功前不要删除旧库。
+Railway 项目或存储桶删除时，其备份也可能被删除，因此项目之外的加密副本不可省略。
+本方案提供逻辑恢复，不提供时间点恢复或一键卷快照恢复。
 
-## Launch acceptance
+## 上线验收
 
-Initial application release: `ade1bb62ee0828339f8c263f36cc57fd3fe0747f`
-([PR #1](https://github.com/byxsssn/ai-workspace/pull/1)). On 2026-10-14:
+首次应用发布为 `ade1bb62ee0828339f8c263f36cc57fd3fe0747f`
+（[PR #1](https://github.com/byxsssn/ai-workspace/pull/1)）。2026-10-14 完成以下验证：
 
-- The production HTTP check passed, including static assets, readiness and API isolation.
-- Two accounts passed invitation rejection, login, conversation isolation and credential
-  isolation checks. Two real `openai/gpt-6-luna` turns produced four persisted messages;
-  the second answer correctly recalled the first turn's marker. Re-login retained them.
-- The owner confirmed the actual HTTPS domain loaded from a mainland network with
-  proxy/VPN disabled. This is evidence for that network at that time, not all networks.
-- Deployment `337adbdd-a620-48b2-99b9-ab28c654620e` intentionally requested a nonexistent
-  Alembic revision and failed before launch; the prior successful deployment continued
-  serving. The configured command was restored to `alembic upgrade head` afterward.
-- A production export was authenticated/decrypted and restored into a new PostgreSQL 18
-  database on the isolated local port 55432. All rows matched after normalizing timezones:
-  2 users, 3 conversations, 4 messages, 2 provider credentials, revision `47684641df93`.
-  Both credentials decrypted with the saved application Fernet key; no orphan messages.
-  Restore plus verification took **3.15 seconds** for this small test dataset. An
-  additional export was uploaded to the private bucket, downloaded, SHA-256 checked,
-  authenticated and restored with the same results in **3.17 seconds**. The encrypted
-  exports and detailed reports are in the access-restricted recovery directory.
-- Release `886defe53080c84b001250eedb97660bb62414ad` passed CI (244 backend tests,
-  9 frontend tests/build, both Docker images and a separate encrypted backup restore).
-  After its deployment, the four-message history was identical, both users could
-  log in, credential metadata remained configured and cross-account reads returned
-  404. The retired invite returned 403; the replacement passed invitation validation.
+- 生产 HTTP 检查通过，覆盖静态资源、就绪状态和 API 隔离。
+- 两个账号通过邀请码拒绝、登录、会话隔离和凭据隔离验证。
+  两轮真实 `openai/gpt-6-luna` 调用保存了四条消息，第二轮正确回忆第一轮标记；重新登录后历史仍在。
+- 用户确认：大陆常用网络关闭代理／VPN 后，实际 HTTPS 域名可以打开。
+  此结果对应当时的实际网络，不代表所有网络都能访问。
+- 部署 `337adbdd-a620-48b2-99b9-ab28c654620e` 故意使用不存在的 Alembic 版本，
+  在发布前失败，上一成功版本继续服务；随后恢复 `alembic upgrade head`。
+- 生产导出经过认证解密后，在本机隔离端口 55432 的新 PostgreSQL 18 数据库中恢复。
+  统一时区后逐行一致：2 个用户、3 个会话、4 条消息、2 条供应商凭据，迁移版本为 `47684641df93`。
+  两条凭据都能用保管的 Fernet 主密钥解密，没有孤立消息。
+  本机恢复与核验耗时 **3.15 秒**；另一份导出上传私有桶、重新下载、校验 SHA-256、
+  认证解密并恢复后结果一致，恢复与核验耗时 **3.17 秒**。这两项为本次小数据量实测。
+  加密导出和详细报告保存在受保护的本机恢复目录。
+- 备份版本 `886defe53080c84b001250eedb97660bb62414ad` 的 CI 全部通过：
+  244 项后端测试、9 项前端测试及构建、两个 Docker 镜像和独立加密备份恢复。
+  部署后四条历史消息完全一致，两名用户仍可登录，密钥元信息仍为已配置，跨账号读取返回 404。
+  旧邀请码返回 403，新邀请码通过校验。
 
-The following checklist must also be completed when publishing subsequent changes:
+首发收尾版本为 `2f13ebfa07cbab65209fc41faab33b2e7c50dacb`
+（[PR #3](https://github.com/byxsssn/ai-workspace/pull/3)），
+[CI 全部通过](https://github.com/byxsssn/ai-workspace/actions/runs/38557864527)。
+2026-10-15 07:34（北京时间）再次通过生产 HTTP、已有账号、隔离和历史保留检查。
+当日 03:02 的自动备份约 6 秒完成，日志确认 `backup_complete`，私有桶中已有新加密文件。
+临时恢复数据库已清理，数据库隧道已关闭，临时 SSH 密钥已撤销。
 
-- Verify the HTTPS domain from the actual mainland network used by invitees.
-- Register and sign in with an invite, then enter an OpenRouter key through the UI.
-- Create a conversation, send two turns, refresh, sign out/in and verify history.
-- Use another account to verify conversation and credential isolation.
-- Redeploy the same app and verify both history and saved credential usability.
-- Confirm backup schedules, an actual backup and an isolated restore drill.
+后续发布时，按变更影响核对以下验收项目：
 
-The optional script below makes **two billable model calls** to the chosen model.
-Its separate env file contains `AI_WORKSPACE_TEST_EMAIL`, `AI_WORKSPACE_TEST_PASSWORD`
-and `AI_WORKSPACE_TEST_MODEL`. Prefer configuring the key through the UI; the script
-reuses a stored credential. If explicitly supplied in that file, a test key is saved
-only when this account does not already have one.
+- 从受邀用户实际使用的大陆网络访问 HTTPS 域名。
+- 使用邀请码注册并登录，通过页面填写 OpenRouter 密钥。
+- 创建会话并发送两轮消息，刷新、退出重登后检查历史。
+- 使用第二个账号验证会话和凭据隔离。
+- 重新部署应用，验证历史和已保存凭据仍可使用。
+- 核实备份计划、实际生成的文件，以及隔离恢复结果。
+
+可选真实联调脚本会产生**两次计费模型调用**。独立配置文件中填写
+`AI_WORKSPACE_TEST_EMAIL`、`AI_WORKSPACE_TEST_PASSWORD` 和 `AI_WORKSPACE_TEST_MODEL`。
+优先通过页面配置密钥，脚本会复用已有凭据；仅在文件明确提供测试密钥且账号尚未配置时保存它。
 
 ```text
 uv run python scripts/smoke_chat.py --base-url https://<application-domain> --env-file .local/production-smoke.env
 ```
 
-Remote testing refuses the default development `.env`, non-HTTPS URLs, credentials
-embedded in URLs and redirects. It leaves a clearly named test conversation and
-prints only safe statuses and the conversation ID.
+远程验证拒绝使用默认开发 `.env`，也拒绝非 HTTPS、URL 内嵌凭据和重定向。
+脚本保留名称明确的测试会话，只输出安全状态和会话 ID。
 
-## Official references
+## 官方参考
 
-- [Pricing](https://railway.com/pricing)
-- [Cost control](https://docs.railway.com/pricing/cost-control)
-- [GitHub checks and automatic deployments](https://docs.railway.com/deployments/github-autodeploys)
-- [Pre-deploy migrations](https://docs.railway.com/deployments/pre-deploy-command)
-- [Volume backups](https://docs.railway.com/volumes/backups)
-- [Scheduled jobs and manual runs](https://docs.railway.com/cron-jobs)
+- [套餐与价格](https://railway.com/pricing)
+- [费用控制](https://docs.railway.com/pricing/cost-control)
+- [GitHub 检查与自动部署](https://docs.railway.com/deployments/github-autodeploys)
+- [发布前迁移命令](https://docs.railway.com/deployments/pre-deploy-command)
+- [持久卷备份](https://docs.railway.com/volumes/backups)
+- [定时任务与手动执行](https://docs.railway.com/cron-jobs)

@@ -13,7 +13,7 @@ class ProviderId(StrEnum):
 
 
 class ModelMessage(BaseModel):
-    """A text message independent of persistence and HTTP API schemas."""
+    """独立于数据库和 HTTP 接口结构的文本消息。"""
 
     model_config = ConfigDict(strict=True)
 
@@ -22,7 +22,7 @@ class ModelMessage(BaseModel):
 
 
 class TokenUsage(BaseModel):
-    """Reported token counts; missing counts remain unknown, not zero."""
+    """供应商返回的 Token 计数；缺失时保持未知，不补零。"""
 
     model_config = ConfigDict(strict=True)
 
@@ -32,7 +32,7 @@ class TokenUsage(BaseModel):
 
 
 class ModelResponse(BaseModel):
-    """The usable text result of one generation, independent of its wire protocol."""
+    """一次生成得到的有效文本结果，独立于底层传输协议。"""
 
     model_config = ConfigDict(strict=True)
 

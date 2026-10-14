@@ -19,7 +19,7 @@ from ai_workspace.services import (
 
 
 class CredentialValidationRoute(APIRoute):
-    """Keep credential request values out of validation error responses."""
+    """校验错误响应中不包含提交的凭据。"""
 
     def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
         original_handler = super().get_route_handler()

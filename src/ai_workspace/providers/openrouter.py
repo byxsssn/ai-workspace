@@ -18,7 +18,7 @@ _BASE_URL = "https://openrouter.ai/api/v1"
 
 
 class OpenRouterProvider:
-    """Stateless text responses with a request-scoped async SDK client."""
+    """无状态文本生成，每次请求使用独立的异步 SDK 客户端。"""
 
     @property
     def provider_id(self) -> ProviderId:
@@ -32,7 +32,7 @@ class OpenRouterProvider:
         messages: Sequence[ModelMessage],
         reasoning_effort: ReasoningEffort | None = None,
     ) -> ModelResponse:
-        """Use the caller's decrypted key and close the SDK client after the call."""
+        """使用调用方解密后的密钥，请求结束后关闭 SDK 客户端。"""
         if not api_key or any(not 33 <= ord(char) <= 126 for char in api_key):
             raise ProviderError("Invalid OpenRouter API key")
 
@@ -40,7 +40,7 @@ class OpenRouterProvider:
             async with AsyncOpenAI(
                 api_key=api_key,
                 base_url=_BASE_URL,
-                # Environment-provided SDK headers must not override BYOK.
+                # SDK 环境配置中的请求头不得覆盖当前用户自带的密钥。
                 default_headers={"Authorization": f"Bearer {api_key}"},
                 http_client=DefaultAsyncHttpxClient(follow_redirects=False),
                 timeout=60.0,
@@ -65,12 +65,12 @@ class OpenRouterProvider:
         except JSONDecodeError:
             raise ProviderError("OpenRouter returned an invalid response") from None
         except APIError, UnicodeError:
-            # SDK exceptions may contain the upstream body or credentials.
+            # SDK 异常可能包含上游响应体或凭据。
             raise ProviderError("OpenRouter request failed") from None
 
         try:
-            # SDK parsing is permissive; enforce only our text-result contract
-            # and OpenRouter's errors that may arrive in an HTTP 200 response.
+            # SDK 采用宽松解析；此处只校验项目所需的文本结果，
+            # 同时检查 OpenRouter 可能在 HTTP 200 响应中返回的错误。
             if (
                 not isinstance(response, Response)
                 or response.status != "completed"
@@ -84,22 +84,22 @@ class OpenRouterProvider:
                 model=response.model,
                 usage=_map_usage(response.usage),
             )
-            # Do not expose credentials even if an upstream response echoes them.
+            # 即使上游回显了密钥，也不能将其暴露给调用方。
             if api_key in result.content or api_key in result.model:
                 raise ValueError
             return result
         except AttributeError, TypeError, ValueError:
-            # Mapping and validation exceptions can include upstream data.
+            # 映射和校验异常可能包含上游数据。
             raise ProviderError("OpenRouter returned an invalid response") from None
 
 
 def _map_input(messages: Sequence[ModelMessage]) -> ResponseInputParam:
-    """Rebuild full text history without referring to provider-side state."""
+    """重建完整文本历史，不依赖供应商侧状态。"""
     items: ResponseInputParam = []
     for index, message in enumerate(messages):
         if message.role == "assistant":
-            # OpenRouter requires id/status for assistant history. These IDs only
-            # identify items in this request; PostgreSQL owns the actual history.
+            # OpenRouter 要求助手历史包含 id/status；这些 ID 仅标记本次请求中的消息，
+            # 实际历史始终以 PostgreSQL 中的记录为准。
             items.append(
                 {
                     "type": "message",
@@ -127,7 +127,7 @@ def _map_input(messages: Sequence[ModelMessage]) -> ResponseInputParam:
 
 
 def _map_usage(usage: ResponseUsage | None) -> TokenUsage | None:
-    """Keep optional display statistics from making a valid answer fail."""
+    """可选的展示用量有误时，仍保留有效回答。"""
     if not isinstance(usage, ResponseUsage):
         return None
     try:
@@ -137,5 +137,5 @@ def _map_usage(usage: ResponseUsage | None) -> TokenUsage | None:
             total_tokens=getattr(usage, "total_tokens", None),
         )
     except ValidationError:
-        # Accept SDK normalization, but never invent missing or invalid counts.
+        # 接受 SDK 已完成的数值规范化，不补造缺失或无效的计数。
         return None

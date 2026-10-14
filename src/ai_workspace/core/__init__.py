@@ -1,1 +1,1 @@
-"""Core application configuration."""
+"""应用核心配置。"""

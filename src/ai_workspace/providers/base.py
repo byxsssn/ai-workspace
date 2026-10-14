@@ -10,7 +10,7 @@ from ai_workspace.providers.types import (
 
 
 class LLMProvider(Protocol):
-    """Generate text; adapters translate expected upstream failures to ProviderError."""
+    """生成文本；适配器将预期的上游失败转换为 ProviderError。"""
 
     @property
     def provider_id(self) -> ProviderId: ...

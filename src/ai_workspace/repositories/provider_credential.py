@@ -7,7 +7,7 @@ from ai_workspace.models import ProviderCredential
 
 
 class ProviderCredentialRepository:
-    """Access encrypted credentials within a caller-managed transaction."""
+    """在调用方管理的事务中读写加密凭据。"""
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -45,7 +45,7 @@ class ProviderCredentialRepository:
     ) -> ProviderCredential:
         credential.encrypted_api_key = encrypted_api_key
         await self.session.flush()
-        # Load the database-generated updated_at before async response serialization.
+        # 异步响应序列化之前，先读取数据库生成的 updated_at。
         await self.session.refresh(credential)
         return credential
 

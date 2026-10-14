@@ -16,10 +16,10 @@ from ai_workspace.services.provider_credential import ProviderCredentialService
 
 
 class ChatService:
-    """Complete one chat and commit its two messages as a single transaction.
+    """完成一轮聊天，并在同一个事务中提交用户和助手的两条消息。
 
-    The caller owns the session; the adapter owns its request resources. The read
-    transaction stays open during generation, with no writes until it succeeds.
+    调用方管理数据库会话，适配器管理请求资源。
+    生成期间保持读取事务，生成成功后才写入消息。
     """
 
     def __init__(self, session: AsyncSession, provider: LLMProvider) -> None:
@@ -67,7 +67,7 @@ class ChatService:
                 role="assistant",
                 content=response.content,
             )
-            # PostgreSQL now() would reflect transaction start, before the provider call.
+            # PostgreSQL 的 now() 对应事务开始时间，早于模型调用完成时间。
             conversation.updated_at = datetime.now(UTC)
             await self.session.commit()
         except Exception:

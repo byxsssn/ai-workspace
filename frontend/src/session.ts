@@ -1,7 +1,7 @@
 const prefix = "ai-workspace:";
 
-// sessionStorage supports refresh without putting JWTs into long-lived localStorage.
-// If storage is disabled, authentication still works in memory for this page.
+// 使用 sessionStorage 支持刷新恢复，避免将 JWT 长期保存在 localStorage。
+// 浏览器存储被禁用时，当前页面仍可使用内存中的登录状态。
 export function readSession(key: string): string {
   try {
     return sessionStorage.getItem(prefix + key) ?? "";
@@ -15,7 +15,7 @@ export function writeSession(key: string, value: string): void {
     if (value) sessionStorage.setItem(prefix + key, value);
     else sessionStorage.removeItem(prefix + key);
   } catch {
-    /* Storage can be blocked by browser settings. */
+    /* 浏览器设置可能禁止使用存储。 */
   }
 }
 
@@ -25,6 +25,6 @@ export function clearSession(): void {
       .filter((key) => key.startsWith(prefix))
       .forEach((key) => sessionStorage.removeItem(key));
   } catch {
-    /* The in-memory session is also cleared by App. */
+    /* App 也会清除内存中的登录状态。 */
   }
 }

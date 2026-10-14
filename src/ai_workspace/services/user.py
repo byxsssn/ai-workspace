@@ -8,15 +8,15 @@ from ai_workspace.repositories import UserRepository
 
 
 class EmailAlreadyRegisteredError(Exception):
-    """The normalized email already belongs to a user."""
+    """规范化后的邮箱已被注册。"""
 
 
 class InvalidCredentialsError(Exception):
-    """The email and password do not identify a user."""
+    """邮箱或密码不匹配。"""
 
 
 class InactiveUserError(Exception):
-    """The authenticated user is inactive."""
+    """已通过身份验证的用户处于停用状态。"""
 
 
 class UserService:
