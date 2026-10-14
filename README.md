@@ -4,6 +4,13 @@ A BYOK multi-model chat app built with FastAPI, SQLAlchemy, PostgreSQL, and a
 minimal React + TypeScript + Vite frontend. V1 supports OpenRouter with a user's
 encrypted API key and non-streaming text chat.
 
+## Railway production deployment
+
+See [the deployment and recovery guide](docs/deployment.md) for the Docker build,
+invitation-only registration, CI-gated releases, budgets and database recovery.
+Production serves the frontend and `/api/...` from one HTTPS origin. Local
+development below continues to use Vite's proxy and the existing API entrypoint.
+
 ## Local development
 
 Requires Python 3.14+, uv and PostgreSQL. Install the locked dependencies with

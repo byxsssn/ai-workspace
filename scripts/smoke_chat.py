@@ -4,9 +4,12 @@ Run from the repository root: uv run python scripts/smoke_chat.py
 Creates a clearly named conversation and makes two billable model requests.
 """
 
+import argparse
 import json
 import sys
+from pathlib import Path
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 from uuid import uuid4
 
@@ -19,15 +22,36 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 def main() -> int:
-    config = dotenv_values(".env")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--env-file", default=".env")
+    parser.add_argument("--base-url", default="http://127.0.0.1:5173")
+    args = parser.parse_args()
+    origin = args.base_url.rstrip("/")
+    parsed = urlsplit(origin)
+    if (
+        parsed.scheme not in ("http", "https")
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+    ):
+        parser.error("Expected an origin without credentials, path, query or fragment")
+    if parsed.hostname not in ("localhost", "127.0.0.1", "::1") and (
+        parsed.scheme != "https"
+        or Path(args.env_file).resolve() == Path(".env").resolve()
+    ):
+        parser.error("Remote smoke tests require HTTPS and a separate --env-file")
+    config = dotenv_values(args.env_file)
     email = config.get("AI_WORKSPACE_TEST_EMAIL")
     password = config.get("AI_WORKSPACE_TEST_PASSWORD")
     api_key = config.get("AI_WORKSPACE_TEST_OPENROUTER_API_KEY") or config.get(
         "OPENROUTER_TEST_API_KEY"
     )
     model = config.get("AI_WORKSPACE_TEST_MODEL")
-    if not all((email, password, api_key, model)):
-        print("Missing test email, password, OpenRouter key or model in .env.")
+    if not all((email, password, model)):
+        print("Missing test email, password or model in the selected env file.")
         return 1
 
     opener = build_opener(NoRedirect())
@@ -38,7 +62,7 @@ def main() -> int:
         if token:
             headers["Authorization"] = f"Bearer {token}"
         req = Request(
-            "http://127.0.0.1:5173/api" + path,
+            origin + "/api" + path,
             data=None if body is None else json.dumps(body).encode(),
             headers=headers,
             method=method,
@@ -65,6 +89,10 @@ def main() -> int:
         except RuntimeError as error:
             if not str(error).endswith("got 404"):
                 raise
+            if not api_key:
+                raise RuntimeError(
+                    "Configure the test account's OpenRouter key in the UI first"
+                ) from None
             credential = request("/providers/openrouter", "PUT", {"api_key": api_key})
         assert credential["configured"]
         assert "api_key" not in credential and "encrypted_api_key" not in credential
@@ -106,7 +134,7 @@ def main() -> int:
             item["id"] == conversation["id"] for item in request("/conversations")
         )
         serialized = json.dumps(after)
-        assert api_key not in serialized and token not in serialized
+        assert (not api_key or api_key not in serialized) and token not in serialized
         print("PASS: multi-turn context, re-login and identical server history")
         print(
             json.dumps(

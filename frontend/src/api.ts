@@ -21,6 +21,7 @@ export class ApiError extends Error {
 const safeDetails: Record<string, string> = {
   "Invalid email or password": "邮箱或密码错误。",
   "Email is already registered": "该邮箱已注册，请直接登录。",
+  "Invalid invitation code": "邀请码无效，请向邀请人获取有效邀请码。",
   "User is inactive": "该账号已停用。",
   "Provider credential not configured": "请先配置 OpenRouter API Key。",
   "Conversation not found": "会话不存在或无权访问，请重新选择会话。",
@@ -58,7 +59,7 @@ export function createApi(
       });
     } catch (error) {
       if (signal?.aborted) throw error;
-      throw new ApiError(0, "无法连接服务，请检查网络及后端是否启动。");
+      throw new ApiError(0, "无法连接服务，请检查网络后重试。");
     }
 
     if (!response.ok) {
@@ -92,13 +93,17 @@ export function createApi(
     try {
       return (await response.json()) as T;
     } catch {
-      throw new ApiError(0, "服务返回格式异常，请确认 Vite 代理和后端配置。");
+      throw new ApiError(0, "服务返回格式异常，请稍后重试。");
     }
   }
 
   return {
-    register: (email: string, password: string) =>
-      request<User>("/users/register", "POST", { email, password }),
+    register: (email: string, password: string, inviteCode?: string) =>
+      request<User>("/users/register", "POST", {
+        email,
+        password,
+        ...(inviteCode ? { invite_code: inviteCode } : {}),
+      }),
     login: (email: string, password: string) =>
       request<TokenResponse>("/auth/login", "POST", { email, password }),
     me: (signal?: AbortSignal) =>

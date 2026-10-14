@@ -14,6 +14,7 @@ export function AuthForm({
   const [registering, setRegistering] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -26,7 +27,7 @@ export function AuthForm({
     setSuccess("");
     try {
       if (registering) {
-        await api.register(email.trim(), password);
+        await api.register(email.trim(), password, inviteCode);
         setRegistering(false);
         setSuccess("注册成功，请登录。");
       } else {
@@ -37,6 +38,7 @@ export function AuthForm({
       setError(errorMessage(error));
     } finally {
       setPassword("");
+      setInviteCode("");
       setBusy(false);
     }
   }
@@ -80,6 +82,21 @@ export function AuthForm({
             required
           />
           <p className="muted small">密码长度为 8–128 个字符。</p>
+          {registering && (
+            <>
+              <label htmlFor="invite-code">邀请码</label>
+              <input
+                id="invite-code"
+                type="password"
+                autoComplete="off"
+                value={inviteCode}
+                onChange={(event) => setInviteCode(event.target.value)}
+                maxLength={256}
+                required={import.meta.env.VITE_REGISTRATION_REQUIRES_INVITE === "true"}
+              />
+              <p className="muted small">受邀试用请填写邀请人提供的邀请码。</p>
+            </>
+          )}
           <button type="submit">
             {busy ? "处理中…" : registering ? "注册" : "登录"}
           </button>
@@ -91,6 +108,7 @@ export function AuthForm({
               setError("");
               setSuccess("");
               setPassword("");
+              setInviteCode("");
             }}
           >
             {registering ? "已有账号，去登录" : "没有账号，去注册"}
