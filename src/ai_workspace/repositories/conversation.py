@@ -7,7 +7,7 @@ from ai_workspace.models import Conversation
 
 
 class ConversationRepository:
-    """Access conversations within a caller-managed transaction."""
+    """在调用方管理的事务中读写会话。"""
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session

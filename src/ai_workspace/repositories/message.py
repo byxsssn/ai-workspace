@@ -7,7 +7,7 @@ from ai_workspace.models import Message
 
 
 class MessageRepository:
-    """Access messages within a caller-managed transaction."""
+    """在调用方管理的事务中读写消息。"""
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -18,7 +18,7 @@ class MessageRepository:
         role: str,
         content: str,
     ) -> Message:
-        # PostgreSQL now() is fixed per transaction; chat messages need write order.
+        # PostgreSQL 的 now() 在事务内保持不变；聊天消息需要按实际写入顺序排序。
         message = Message(
             conversation_id=conversation_id,
             role=role,

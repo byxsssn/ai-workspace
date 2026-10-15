@@ -1,7 +1,7 @@
 [project]
 name = "ai-workspace"
 version = "0.1.0"
-description = "Add your description here"
+description = "支持用户自带 API 密钥的多模型聊天工作区"
 readme = "README.md"
 authors = [
     { name = "byxsss", email = "148875581+byxsssn@users.noreply.github.com" }

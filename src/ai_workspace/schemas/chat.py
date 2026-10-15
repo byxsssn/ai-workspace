@@ -11,8 +11,8 @@ class ChatRequest(BaseModel):
     reasoning_effort: ReasoningEffort | None = Field(
         default=None,
         description=(
-            "Reasoning effort for this turn. Omit or use null for the model default; "
-            "'none' requests no reasoning. Supported levels depend on the model."
+            "本轮推理强度。省略或传入 null 时使用模型默认值；"
+            "'none' 表示请求关闭推理。支持的档位取决于具体模型。"
         ),
     )
 

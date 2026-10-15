@@ -84,7 +84,7 @@ export function ChatPanel({
       setLastReply(result);
       setDraft("");
       onSent();
-      // The backend committed both messages. Reload their real IDs and timestamps.
+      // 后端已提交两条消息，重新读取其真实 ID 和时间戳。
       try {
         const history = await api.messages(conversationId, signal);
         if (!signal.aborted) setMessages(history);
@@ -155,7 +155,7 @@ export function ChatPanel({
                 {new Date(message.created_at).toLocaleString("zh-CN")}
               </time>
             </div>
-            {/* Plain React text: model/user HTML is never executed. */}
+            {/* 使用 React 纯文本渲染，不执行模型或用户输入中的 HTML。 */}
             <div className="message-content">{message.content}</div>
           </article>
         ))}
@@ -163,7 +163,7 @@ export function ChatPanel({
       </div>
       {lastReply && (
         <p role="status" className="small muted">
-          本轮模型：{lastReply.model} · Token：
+          本轮模型：{lastReply.model} · Token 用量：
           {lastReply.usage?.total_tokens ?? "未返回"}
         </p>
       )}
@@ -188,7 +188,7 @@ export function ChatPanel({
             {sending
               ? "正在等待模型回复，请勿刷新页面…"
               : !configured
-                ? "请先配置 API Key。"
+                ? "请先配置 API 密钥。"
                 : "回复完成后一次性显示。"}
           </span>
           <button

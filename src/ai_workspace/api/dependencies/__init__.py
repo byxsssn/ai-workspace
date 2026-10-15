@@ -1,1 +1,1 @@
-"""Reusable HTTP API dependencies."""
+"""HTTP 接口共用的依赖。"""

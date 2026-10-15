@@ -9,7 +9,7 @@ ALGORITHM = "HS256"
 
 
 class InvalidAccessTokenError(Exception):
-    """The access token is invalid or has expired."""
+    """访问令牌无效或已过期。"""
 
 
 def create_access_token(user_id: UUID) -> str:

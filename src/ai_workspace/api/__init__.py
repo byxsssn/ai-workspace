@@ -1,1 +1,1 @@
-"""HTTP API package."""
+"""HTTP 接口模块。"""

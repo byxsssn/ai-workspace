@@ -9,7 +9,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-it("sends the invitation only on registration and clears secrets after a rejected attempt", async () => {
+it("仅注册时发送邀请码，失败后清除敏感输入", async () => {
   vi.stubEnv("VITE_REGISTRATION_REQUIRES_INVITE", "true");
   sessionStorage.clear();
   localStorage.clear();

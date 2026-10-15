@@ -15,7 +15,7 @@ from ai_workspace.core.config import Settings, get_settings
 
 
 def _configure_provider_logging() -> None:
-    """Keep upstream headers, bodies and SDK exceptions out of verbose logs."""
+    """限制详细日志，避免记录上游请求头、请求体和 SDK 异常。"""
     loggers = [logging.getLogger(name) for name in ("openai", "httpx2", "httpcore2")]
     while loggers:
         logger = loggers.pop()
@@ -23,7 +23,7 @@ def _configure_provider_logging() -> None:
         loggers.extend(logger.getChildren())
 
 
-# Run after the SDK imports, which may enable logging through OPENAI_LOG.
+# 在 SDK 导入后执行，因为导入时可能通过 OPENAI_LOG 开启详细日志。
 _configure_provider_logging()
 
 
@@ -47,7 +47,7 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
     async def safe_validation_error(
         request: Request, exc: RequestValidationError
     ) -> JSONResponse:
-        # Never return submitted passwords, invitation codes, or malformed bodies.
+        # 不回显提交的密码、邀请码或格式错误的请求体。
         return JSONResponse(
             status_code=422,
             content={

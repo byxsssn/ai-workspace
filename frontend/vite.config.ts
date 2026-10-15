@@ -11,7 +11,7 @@ const proxy = {
 
 export default defineConfig({
   plugins: [react()],
-  // Never load the backend's .env into the client or expose it through /@fs/.
+  // 不将后端 .env 加载到前端，也不通过 /@fs/ 暴露它。
   envDir: ".",
   server: {
     host: "127.0.0.1",

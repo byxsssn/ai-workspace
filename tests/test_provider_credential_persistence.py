@@ -1,4 +1,4 @@
-"""Service persistence test; commits stay inside an outer rollback transaction."""
+"""服务持久化测试；提交仍处于外层回滚事务中。"""
 
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -86,7 +86,7 @@ async def test_save_replace_and_delete_preserve_secrets_and_user_isolation(
     )
     other_id, other_ciphertext = other_saved.id, other_saved.encrypted_api_key
 
-    # PostgreSQL now() is constant within the test's outer transaction.
+    # PostgreSQL 的 now() 在测试外层事务中保持不变。
     old_timestamp = datetime(2000, 1, 1, tzinfo=UTC)
     saved.updated_at = old_timestamp
     await db_session.flush()

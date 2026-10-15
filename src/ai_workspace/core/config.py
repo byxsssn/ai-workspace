@@ -48,7 +48,7 @@ class Settings(BaseSettings):
                 hide_password=False
             )
         except ValueError, ArgumentError:
-            # SQLAlchemy's parsing errors can contain the original connection URL.
+            # SQLAlchemy 解析异常可能包含原始数据库连接地址。
             raise ValueError("A valid PostgreSQL connection URL is required") from None
 
     @field_validator("credential_encryption_key")

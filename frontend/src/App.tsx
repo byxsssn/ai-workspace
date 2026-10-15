@@ -25,7 +25,7 @@ export default function App() {
   const api = useMemo(
     () =>
       createApi(token, () => {
-        // A late 401 from an old request must not clear a newer login.
+        // 旧请求迟到的 401 响应不得清除后来建立的登录状态。
         if (currentToken.current === token) logout("登录已失效，请重新登录。");
       }),
     [token, logout],

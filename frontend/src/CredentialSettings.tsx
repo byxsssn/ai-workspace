@@ -58,7 +58,7 @@ export function CredentialSettings({ api, disabled, onConfigured }: Props) {
       );
       setConfigured(credential.configured);
       onConfigured(credential.configured);
-      setNotice("API Key 已保存。");
+      setNotice("API 密钥已保存。");
     } catch (error) {
       if (!lifetime.current.signal.aborted) setError(errorMessage(error));
     } finally {
@@ -75,7 +75,7 @@ export function CredentialSettings({ api, disabled, onConfigured }: Props) {
       await api.deleteCredential(lifetime.current.signal);
       setConfigured(false);
       onConfigured(false);
-      setNotice("API Key 已移除。");
+      setNotice("API 密钥已移除。");
     } catch (error) {
       if (!lifetime.current.signal.aborted) setError(errorMessage(error));
     } finally {
@@ -84,15 +84,15 @@ export function CredentialSettings({ api, disabled, onConfigured }: Props) {
   }
 
   return (
-    <section className="credentials" aria-label="API Key 配置">
-      <h2>OpenRouter API Key</h2>
+    <section className="credentials" aria-label="API 密钥配置">
+      <h2>OpenRouter API 密钥</h2>
       <p role="status" className={configured ? "success small" : "muted small"}>
         {busy ? "正在处理…" : configured ? "已配置" : "未配置"}
       </p>
       <form onSubmit={save}>
         <fieldset disabled={busy || disabled}>
           <label htmlFor="api-key">
-            {configured ? "替换 API Key" : "API Key"}
+            {configured ? "替换 API 密钥" : "API 密钥"}
           </label>
           <input
             id="api-key"

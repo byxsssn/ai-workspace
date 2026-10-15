@@ -1,4 +1,4 @@
-"""Read-only checks against a deployed production build (no model calls)."""
+"""只读检查已部署的生产版本，不调用模型。"""
 
 import argparse
 import re
@@ -15,8 +15,10 @@ class NoRedirect(HTTPRedirectHandler):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("url", help="Production origin, without /api")
-    parser.add_argument("--wait", type=int, default=60)
+    parser.add_argument("url", help="生产服务地址，不包含 /api 路径")
+    parser.add_argument(
+        "--wait", type=int, default=60, help="等待服务就绪的秒数，默认 60"
+    )
     args = parser.parse_args()
     origin = args.url.rstrip("/")
     url = urlsplit(origin)
@@ -29,9 +31,9 @@ def main() -> None:
         or url.fragment
         or url.path
     ):
-        parser.error("Expected an origin without credentials, path, query, or fragment")
+        parser.error("请提供不含凭据、路径、查询参数或片段的服务地址")
     if url.scheme == "http" and url.hostname not in ("localhost", "127.0.0.1", "::1"):
-        parser.error("Remote checks require HTTPS")
+        parser.error("远程检查必须使用 HTTPS")
     opener = build_opener(NoRedirect())
 
     def get(path: str, expected: int):
@@ -41,7 +43,9 @@ def main() -> None:
             response = error
         with response:
             if response.code != expected:
-                raise RuntimeError(f"{path}: expected {expected}, got {response.code}")
+                raise RuntimeError(
+                    f"{path}：预期状态码 {expected}，实际为 {response.code}"
+                )
             return response.read().decode(), response.headers
 
     deadline = time.monotonic() + args.wait
@@ -51,13 +55,13 @@ def main() -> None:
             break
         except RuntimeError, URLError, TimeoutError:
             if time.monotonic() >= deadline:
-                raise RuntimeError("Production readiness check failed") from None
+                raise RuntimeError("生产服务就绪检查失败") from None
             time.sleep(1)
     html, headers = get("/", 200)
     assert "AI Workspace" in html and "text/html" in headers["content-type"]
     assert headers["cache-control"] == "no-store"
     assets = re.findall(r'(?:src|href)="(/assets/[^"<>]+)"', html)
-    assert assets, "No production assets found"
+    assert assets, "未找到生产静态资源"
     for asset in assets:
         _, asset_headers = get(asset, 200)
         assert "immutable" in asset_headers["cache-control"]
@@ -66,9 +70,7 @@ def main() -> None:
     for path in ("/api/not-found", "/api/docs", "/api/openapi.json", "/.env"):
         body, _ = get(path, 404)
         assert "<html" not in body.lower()
-    print(
-        "PASS: readiness, frontend assets, API routing, authentication, and production isolation"
-    )
+    print("通过：服务就绪、前端静态资源、API 路由、身份验证与生产环境隔离检查")
 
 
 if __name__ == "__main__":

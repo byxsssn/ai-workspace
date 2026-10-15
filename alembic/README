@@ -1,23 +1,23 @@
-AI Workspace database migrations
+AI Workspace 数据库迁移
 
-Run commands from the repository root with uv so that Settings can load .env.
-The database URL comes from get_settings().database_url; alembic.ini stores no
-database credentials. AI_WORKSPACE_DATABASE_URL overrides the value in .env.
+在仓库根目录通过 uv 运行命令，Settings 才能读取 .env。
+数据库地址来自 get_settings().database_url；alembic.ini 不保存数据库凭据。
+环境变量 AI_WORKSPACE_DATABASE_URL 的优先级高于 .env。
 
-Online mode uses an asyncpg-compatible AsyncEngine and Connection.run_sync().
-Offline mode generates SQL without a database connection:
+在线模式使用兼容 asyncpg 的 AsyncEngine 和 Connection.run_sync()。
+离线模式无需连接数据库，即可生成 SQL：
     uv run alembic upgrade head --sql
-This command only prints SQL; it does not execute it against PostgreSQL.
+该命令只输出 SQL，不会对 PostgreSQL 执行这些语句。
 
-Inspect the database revision and available script heads:
+查看当前数据库版本和迁移脚本的最新版本：
     uv run alembic current
     uv run alembic heads
 
-The version history creates users, conversations, messages and provider_credentials.
-Alembic imports ai_workspace.models to register these models on Base.metadata.
-Use `uv run alembic upgrade head` to apply the existing migrations to the configured
-database; use a dedicated test database before running integration tests.
+已有迁移依次创建 users、conversations、messages 和 provider_credentials。
+Alembic 导入 ai_workspace.models，将这些模型注册到 Base.metadata。
+运行 uv run alembic upgrade head 可将迁移应用到配置指定的数据库；
+执行集成测试前，请先配置专用测试库并完成迁移。
 
-The nullable provider_credentials.base_url column is retained as legacy storage.
-V1 does not accept, return or use it. No schema migration is needed for the LLM
-provider boundary refactor; do not rewrite historical migrations to remove it.
+provider_credentials.base_url 可空列为历史兼容而保留。
+首版不接收、返回或使用它。模型供应商边界重构无需修改表结构，
+不要为删除该字段而改写历史迁移的数据库操作。

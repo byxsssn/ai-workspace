@@ -1,4 +1,4 @@
-"""Chat integration tests; service commits remain inside an outer rollback."""
+"""聊天集成测试；服务提交仍处于外层回滚事务中。"""
 
 import json
 import logging

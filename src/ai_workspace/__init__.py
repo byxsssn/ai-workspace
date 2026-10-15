@@ -1,2 +1,2 @@
 def main() -> None:
-    print("Hello from ai-workspace!")
+    print("欢迎使用 AI Workspace！")

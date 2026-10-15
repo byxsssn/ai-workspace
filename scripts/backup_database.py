@@ -1,4 +1,4 @@
-"""Encrypted PostgreSQL exports to a private S3 bucket; no application imports."""
+"""将 PostgreSQL 导出加密后上传私有 S3 桶；不依赖应用模块。"""
 
 import argparse
 import base64
@@ -52,7 +52,7 @@ def encrypt(source: Path, destination: Path, key: bytes) -> None:
 def decrypt(source: Path, destination: Path, key: bytes) -> None:
     if destination.exists():
         raise FileExistsError("Restore destination already exists")
-    # Unauthenticated plaintext stays private and is never published on failure.
+    # 完整性认证通过前，明文仅保存在私有临时文件中，失败时不生成目标文件。
     with tempfile.TemporaryDirectory(dir=destination.parent) as work:
         temporary = Path(work) / "verified.dump"
         with source.open("rb") as src, temporary.open("xb") as dst:
@@ -74,7 +74,7 @@ def decrypt(source: Path, destination: Path, key: bytes) -> None:
                 remaining -= len(block)
                 dst.write(cipher.update(block))
             dst.write(cipher.finalize())
-        # Exclusive creation also protects against an output appearing during decryption.
+        # 以独占方式创建文件，避免覆盖解密期间新出现的同名目标文件。
         with temporary.open("rb") as src, destination.open("xb") as dst:
             while block := src.read(CHUNK):
                 dst.write(block)
@@ -203,7 +203,7 @@ def publish(client, bucket: str, archive: Path, now: datetime) -> dict:
     )
     verify_object(client, bucket, daily, size, checksum)
     weekly_rows = objects(client, bucket, "weekly")
-    # Mondays in Singapore/China, plus the first run to establish a recovery point.
+    # 按新加坡／中国时区在周一保存周备份，首次运行也建立周恢复点。
     weekly = (now + timedelta(hours=8)).weekday() == 0 or not weekly_rows
     if weekly:
         weekly_name = PREFIX + "weekly/" + name
@@ -211,7 +211,7 @@ def publish(client, bucket: str, archive: Path, now: datetime) -> dict:
             Bucket=bucket, Key=weekly_name, CopySource={"Bucket": bucket, "Key": daily}
         )
         verify_object(client, bucket, weekly_name, size, checksum)
-    # Cleanup runs only after all required uploads and metadata checks succeed.
+    # 所有必需的上传和元信息检查成功后，才清理过期备份。
     deleted = 0
     for kind, days in RETENTION.items():
         rows = objects(client, bucket, kind)
@@ -241,18 +241,22 @@ def publish(client, bucket: str, archive: Path, now: datetime) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--decrypt", nargs=2, type=Path, metavar=("SOURCE", "DESTINATION")
+        "--decrypt",
+        nargs=2,
+        type=Path,
+        metavar=("SOURCE", "DESTINATION"),
+        help="校验并解密备份，依次指定源文件和目标文件",
     )
-    parser.add_argument("--key-file", type=Path)
+    parser.add_argument("--key-file", type=Path, help="存放备份加密密钥的受保护文件")
     parser.add_argument(
-        "--local-backup", type=Path, help="Export and encrypt locally without using S3"
+        "--local-backup", type=Path, help="在本地导出并加密，不上传到 S3"
     )
     args = parser.parse_args()
     try:
         key = encryption_key(args.key_file)
         if args.decrypt:
             decrypt(*args.decrypt, key)
-            print("PASS: backup authenticated and decrypted")
+            print("通过：备份完整性认证与解密完成")
             return 0
         client = None if args.local_backup else make_client()
         with tempfile.TemporaryDirectory(prefix="ai-workspace-backup-") as work:
@@ -263,15 +267,15 @@ def main() -> int:
             dump_database(dump)
             encrypt(dump, args.local_backup or archive, key)
             if args.local_backup:
-                print("PASS: PostgreSQL archive exported and encrypted")
+                print("通过：PostgreSQL 归档导出与加密完成")
             else:
                 result = publish(
                     client, os.environ["BACKUP_S3_BUCKET"], archive, datetime.now(UTC)
                 )
                 print(json.dumps({"status": "backup_complete", **result}), flush=True)
         return 0
-    except Exception as error:  # noqa: BLE001 - CLI boundary must redact SDK errors.
-        # SDK/subprocess exceptions can contain signed URLs or database credentials.
+    except Exception as error:  # noqa: BLE001 - 命令行出口必须屏蔽 SDK 错误中的敏感内容。
+        # SDK 或子进程异常可能包含签名 URL 或数据库凭据。
         print(
             json.dumps({"status": "backup_failed", "error_type": type(error).__name__}),
             flush=True,

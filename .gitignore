@@ -1,4 +1,4 @@
-# Python-generated files
+# Python 自动生成的文件
 __pycache__/
 *.py[oc]
 build/
@@ -6,15 +6,15 @@ dist/
 wheels/
 *.egg-info
 
-# Virtual environments
+# 虚拟环境
 .venv
 
-# Local environment configuration
+# 本地环境配置
 .env
 .env.*
 !.env.example
 
-# Frontend dependencies and local verification artifacts
+# 前端依赖和本地验证产物
 node_modules/
 *.tsbuildinfo
 .local/
