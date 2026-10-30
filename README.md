@@ -4,6 +4,11 @@
 PostgreSQL，前端使用 React、TypeScript 和 Vite。首版通过 OpenRouter 调用模型，
 加密保存每个用户的密钥，并提供非流式文本聊天。
 
+学习模式第一阶段已加入只读接入：三个 FastAPI 官方章节、固定演示记录和可配置的
+Notion 学习记录读取。当前提供后端接口与命令行检查，教学 Agent 和学习页面按后续阶段实现。
+使用与技术导读见 [学习资料读取](docs/learning-sources.md)，整体方向见
+[学习 Agent 计划](docs/learning-agent-plan.md)。
+
 ## 线上使用与部署
 
 - [打开 AI Workspace](https://ai-workspace-production-f76f.up.railway.app/)

@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from ai_workspace.api.routes.auth import router as auth_router
 from ai_workspace.api.routes.chat import router as chat_router
 from ai_workspace.api.routes.conversations import router as conversations_router
+from ai_workspace.api.routes.learning import router as learning_router
 from ai_workspace.api.routes.provider_credentials import (
     router as provider_credentials_router,
 )
@@ -64,6 +65,7 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
         conversations_router,
         chat_router,
         provider_credentials_router,
+        learning_router,
     ):
         api.include_router(router)
     api.add_api_route("/health", health, methods=["GET"])
