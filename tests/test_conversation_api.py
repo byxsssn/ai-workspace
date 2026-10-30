@@ -208,3 +208,53 @@ def test_list_messages_requires_auth_and_valid_uuid(
         response = client.get(f"/conversations/{uuid4()}/messages")
     assert response.status_code == 401
     service.list_messages.assert_not_called()
+
+
+def test_update_conversation_title_returns_200(
+    client_user_service: tuple[TestClient, User, Mock],
+) -> None:
+    client, user, service = client_user_service
+    title = "New title"
+    conversation = make_conversation(user.id, title)
+    service.update_title.return_value = conversation
+    response = client.patch(
+        f"/conversations/{conversation.id}",
+        json={"title": title},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["title"] == title
+    service.update_title.assert_awaited_once_with(conversation.id, user.id, title)
+
+
+def test_update_missing_conversation_title_returns_404(
+    client_user_service: tuple[TestClient, User, Mock],
+) -> None:
+    client, user, service = client_user_service
+    title = "New title"
+    conversation_id = uuid4()
+    service.update_title.side_effect = ConversationNotFoundError(
+        "Conversation not found"
+    )
+    response = client.patch(
+        f"/conversations/{conversation_id}",
+        json={"title": title},
+    )
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Conversation not found"}
+    service.update_title.assert_awaited_once_with(conversation_id, user.id, title)
+
+
+@pytest.mark.parametrize("invalid_title", ["", "a" * 256])
+def test_update_conversation_title_returns_422_for_invalid_title(
+    client_user_service: tuple[TestClient, User, Mock],
+    invalid_title: str,
+) -> None:
+    client, _, service = client_user_service
+    conversation_id = uuid4()
+    response = client.patch(
+        f"/conversations/{conversation_id}",
+        json={"title": invalid_title},
+    )
+    assert response.status_code == 422
+    service.update_title.assert_not_called()

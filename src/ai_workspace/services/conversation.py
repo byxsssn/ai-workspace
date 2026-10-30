@@ -51,3 +51,18 @@ class ConversationService:
         return await MessageRepository(self.session).list_by_conversation(
             conversation_id
         )
+
+    async def update_title(
+        self, conversation_id: UUID, user_id: UUID, title: str
+    ) -> Conversation:
+        try:
+            comversation = await self.repository.update_title(
+                conversation_id, user_id, title
+            )
+            if comversation is None:
+                raise ConversationNotFoundError("Conversation not found")
+            await self.session.commit()
+        except Exception:
+            await self.session.rollback()
+            raise
+        return comversation

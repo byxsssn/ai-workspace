@@ -219,3 +219,34 @@ async def test_create_conversation_does_not_commit(
             assert stored_id is None
     finally:
         event.remove(db_session.sync_session, "after_commit", after_commit)
+
+
+async def test_update_title_updates_conversation(
+    db_session: AsyncSession, owner: User
+) -> None:
+    conversation = Conversation(
+        user_id=owner.id, title="Old title", updated_at=datetime(2026, 1, 1, tzinfo=UTC)
+    )
+    db_session.add(conversation)
+    await db_session.flush()
+    await db_session.refresh(conversation)
+    old_updated_at = conversation.updated_at
+    old_created_at = conversation.created_at
+    new_title = "New title"
+    updated_conversation = await ConversationRepository(db_session).update_title(
+        conversation.id, owner.id, new_title
+    )
+    assert updated_conversation is not None
+    assert updated_conversation.title == new_title
+    assert updated_conversation.id == conversation.id
+    assert updated_conversation.user_id == owner.id
+    assert updated_conversation.updated_at > old_updated_at
+    assert updated_conversation.created_at == old_created_at
+
+
+async def test_update_title_returns_none(db_session: AsyncSession, owner: User) -> None:
+    non_existent_id = uuid4()
+    updated_conversation = await ConversationRepository(db_session).update_title(
+        non_existent_id, owner.id, "New title"
+    )
+    assert updated_conversation is None

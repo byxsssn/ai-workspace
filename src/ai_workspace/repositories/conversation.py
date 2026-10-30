@@ -46,3 +46,16 @@ class ConversationRepository:
             )
         )
         return list(result.scalars().all())
+
+    async def update_title(
+        self,
+        conversation_id: UUID,
+        user_id: UUID,
+        title: str,
+    ) -> Conversation | None:
+        conversation = await self.get_by_id_for_user(conversation_id, user_id)
+        if conversation:
+            conversation.title = title
+            await self.session.flush()
+            await self.session.refresh(conversation)
+        return conversation
