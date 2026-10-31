@@ -8,6 +8,7 @@ from ai_workspace.api.routes.auth import router as auth_router
 from ai_workspace.api.routes.chat import router as chat_router
 from ai_workspace.api.routes.conversations import router as conversations_router
 from ai_workspace.api.routes.learning import router as learning_router
+from ai_workspace.api.routes.learning_chat import router as learning_chat_router
 from ai_workspace.api.routes.provider_credentials import (
     router as provider_credentials_router,
 )
@@ -17,7 +18,10 @@ from ai_workspace.core.config import Settings, get_settings
 
 def _configure_provider_logging() -> None:
     """限制详细日志，避免记录上游请求头、请求体和 SDK 异常。"""
-    loggers = [logging.getLogger(name) for name in ("openai", "httpx2", "httpcore2")]
+    loggers = [
+        logging.getLogger(name)
+        for name in ("openai", "httpx2", "httpcore2", "httpx", "httpcore", "openrouter")
+    ]
     while loggers:
         logger = loggers.pop()
         logger.setLevel(logging.WARNING)
@@ -66,6 +70,7 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
         chat_router,
         provider_credentials_router,
         learning_router,
+        learning_chat_router,
     ):
         api.include_router(router)
     api.add_api_route("/health", health, methods=["GET"])
