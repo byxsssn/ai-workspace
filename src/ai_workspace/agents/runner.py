@@ -24,6 +24,7 @@ from langchain_core.messages import AIMessage
 from langgraph.errors import GraphRecursionError
 from langsmith import tracing_context
 
+from ai_workspace.agents.rankings import RANKINGS_PROMPT, RankingToolSession
 from ai_workspace.learning.agent_errors import LearningAgentError
 from ai_workspace.learning.agent_models import LearningAnswer, LearningChatResponse
 from ai_workspace.learning.policy import LearningPolicy
@@ -36,6 +37,7 @@ from ai_workspace.providers import (
     TokenUsage,
 )
 from ai_workspace.providers.openrouter import open_chat_model
+from ai_workspace.rankings.service import PypiRankingService
 
 type ModelFactory = Callable[..., AbstractAsyncContextManager[BaseChatModel]]
 
@@ -83,10 +85,12 @@ class AgentRunner:
         self,
         sources: LearningService,
         *,
+        rankings: PypiRankingService | None = None,
         model_factory: ModelFactory = open_chat_model,
         timeout_seconds: float | None = None,
     ) -> None:
         self.sources = sources
+        self.rankings = rankings
         self.model_factory = model_factory
         self.timeout_seconds = timeout_seconds
 
@@ -102,23 +106,31 @@ class AgentRunner:
     ) -> ModelResponse | LearningChatResponse:
         # 权限预检先于模型请求。普通对话不创建学习工具，也不要求 Notion 配置。
         policy = LearningPolicy(self.sources, user_id, source) if source else None
+        ranking_tools = (
+            RankingToolSession(self.rankings)
+            if not policy and self.rankings is not None
+            else None
+        )
         secrets = (api_key,)
         if self.sources.settings.notion_api_token is not None:
             secrets += (self.sources.settings.notion_api_token.get_secret_value(),)
         guard = _SecretGuard(secrets)
         middleware = [
             ModelCallLimitMiddleware(
-                run_limit=5 if policy else 1, exit_behavior="error"
+                run_limit=5 if policy else 3 if ranking_tools else 1,
+                exit_behavior="error",
             )
         ]
-        if policy:
+        if policy or ranking_tools:
             middleware.append(
-                ToolCallLimitMiddleware(run_limit=6, exit_behavior="error")
+                ToolCallLimitMiddleware(
+                    run_limit=6 if policy else 2, exit_behavior="error"
+                )
             )
         middleware.append(guard)
         timeout = self.timeout_seconds
         if timeout is None:
-            timeout = 120 if policy else 60
+            timeout = 120 if policy or ranking_tools else 60
 
         try:
             guard.check_payload([message.model_dump() for message in messages])
@@ -135,8 +147,16 @@ class AgentRunner:
                     ) as llm:
                         agent = create_agent(
                             model=llm,
-                            tools=policy.session.build_tools() if policy else [],
-                            system_prompt=policy.system_prompt if policy else None,
+                            tools=policy.session.build_tools()
+                            if policy
+                            else ranking_tools.build_tools()
+                            if ranking_tools
+                            else [],
+                            system_prompt=policy.system_prompt
+                            if policy
+                            else RANKINGS_PROMPT
+                            if ranking_tools
+                            else None,
                             response_format=ToolStrategy(
                                 LearningAnswer, handle_errors=False
                             )
@@ -172,7 +192,11 @@ class AgentRunner:
             final = generated[-1]
             if final.tool_calls or not final.text.strip():
                 raise ProviderError("Agent did not return a valid text response")
-            return ModelResponse(content=final.text, model=actual_model, usage=usage)
+            content = (
+                ranking_tools.append_source(final.text) if ranking_tools else final.text
+            )
+            guard.check_payload(content)
+            return ModelResponse(content=content, model=actual_model, usage=usage)
         except LearningAgentError:
             raise
         except TimeoutError:

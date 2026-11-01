@@ -44,7 +44,7 @@ export function AuthForm({
   }
 
   return (
-    <main className="auth-card">
+    <section className="auth-card" aria-label="登录与注册">
       <h1>AI Workspace</h1>
       <p className="muted">使用自己的 OpenRouter API 密钥开始聊天。</p>
       <h2>{registering ? "创建账号" : "登录"}</h2>
@@ -115,6 +115,6 @@ export function AuthForm({
           </button>
         </fieldset>
       </form>
-    </main>
+    </section>
   );
 }

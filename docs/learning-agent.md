@@ -123,8 +123,8 @@ sequenceDiagram
 1. `src/ai_workspace/learning/tools.py`：看 `build_tools()`。`@tool` 提供说明和参数结构，
    实际读取仍调用 `LearningService`；身份和来源绑定在后端，不让模型传入。
 2. `src/ai_workspace/agents/runner.py`：看共享的 `create_agent()` 与 `ainvoke()`。
-   普通模式没有工具；学习模式由模型提出工具调用，框架执行 Python 函数，将结果作为
-   `ToolMessage` 再交给模型。middleware 限制调用次数并拦截已知凭据。
+   普通模式可查询公共 PyPI 榜单；学习模式可读取学习记录和官方章节。模型提出工具调用，
+   框架执行 Python 函数，将结果作为 `ToolMessage` 再交给模型。middleware 限制调用次数并拦截已知凭据。
 3. `src/ai_workspace/learning/policy.py`：看学习权限、提示词、工具会话和来源核验。
    学习模式用 `LearningAnswer` 约束最终输出，策略再核对引用并组装带来源的回答。
 4. `src/ai_workspace/services/turn.py`：看共享的数据库读取、外部调用和保存之间的事务边界。

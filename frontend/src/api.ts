@@ -7,6 +7,7 @@ import type {
   LearningRecordList,
   LearningSource,
   Message,
+  PypiRanking,
   TokenResponse,
   User,
 } from "./types";
@@ -35,6 +36,7 @@ const safeDetails: Record<string, string> = {
 };
 
 const safeCodes: Record<string, string> = {
+  rankings_unavailable: "暂时无法取得排行榜数据，请稍后重试。",
   notion_not_configured: "尚未配置 Notion 连接。配置后可读取自己的学习记录，也可以先选择演示数据。",
   notion_catalog_not_configured: "尚未配置 Notion 学习数据库。请先完成学习地图的数据源配置。",
   notion_not_available: "当前账号无权读取这份 Notion 学习记录，请联系连接所有者确认。",
@@ -135,6 +137,8 @@ export function createApi(
   }
 
   return {
+    pypiRankings: (signal?: AbortSignal) =>
+      request<PypiRanking>("/rankings/pypi", "GET", undefined, signal),
     register: (email: string, password: string, inviteCode?: string) =>
       request<User>("/users/register", "POST", {
         email,

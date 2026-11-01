@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -21,6 +22,8 @@ from ai_workspace.learning.errors import LearningSourceError
 from ai_workspace.learning.models import OfficialDocument
 from ai_workspace.learning.service import LearningService
 from ai_workspace.providers import ModelMessage, ProviderError
+from ai_workspace.rankings.schemas import PypiRankingResponse
+from ai_workspace.rankings.service import PypiRankingService
 
 pytestmark = pytest.mark.anyio
 KEY = "fake-learning-model-secret"
@@ -107,7 +110,9 @@ def source_service():
     return service
 
 
-def setup_agent(responses, *, service=None, timeout=120, **model_options):
+def setup_agent(
+    responses, *, service=None, rankings=None, timeout=120, **model_options
+):
     model = ScriptedModel(responses=responses, **model_options)
     lifetime = {"opened": False, "closed": False}
 
@@ -126,7 +131,9 @@ def setup_agent(responses, *, service=None, timeout=120, **model_options):
 
     scripted = model
     source = service or source_service()
-    agent = AgentRunner(source, model_factory=factory, timeout_seconds=timeout)
+    agent = AgentRunner(
+        source, rankings=rankings, model_factory=factory, timeout_seconds=timeout
+    )
     return agent, model, source, lifetime
 
 
@@ -525,4 +532,257 @@ async def test_plain_cancellation_propagates_and_closes_resources():
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+    assert lifetime["closed"]
+
+
+def ranking_service(*, stale=False):
+    service = AsyncMock(spec=PypiRankingService)
+    service.list_rankings.return_value = PypiRankingResponse(
+        snapshot_id="a" * 64,
+        source="hugovk/top-pypi-packages",
+        upstream="ClickHouse",
+        source_url="https://hugovk.dev/top-pypi-packages/top-pypi-packages.min.json",
+        period="2026-09",
+        source_updated_at=datetime(2026, 10, 1, tzinfo=UTC),
+        fetched_at=datetime(2026, 10, 2, tzinfo=UTC),
+        checked_at=datetime(2026, 10, 2, tzinfo=UTC),
+        catalog_version="pypi-curated-v1",
+        candidate_count=3,
+        matched_count=2,
+        source_count=15_000,
+        filtered_count=3,
+        stale=stale,
+        warnings=["refresh_failed"] if stale else [],
+        categories=[{"id": "web", "label": "Web 框架"}],
+        items=[
+            {
+                "project": project,
+                "name": name,
+                "category": "web",
+                "category_label": "Web 框架",
+                "description": "Test framework",
+                "download_count": count,
+                "rank": rank,
+                "pypi_url": f"https://pypi.org/project/{project}/",
+            }
+            for project, name, count, rank in (
+                ("fastapi", "FastAPI", 500, 1),
+                ("django", "Django", 300, 2),
+                ("flask", "Flask", None, None),
+            )
+        ],
+    )
+    return service
+
+
+async def test_public_ranking_tool_is_available_without_reading_private_records():
+    rankings = ranking_service()
+    agent, model, learning, _ = setup_agent(
+        [AIMessage(content="你好，有什么想了解的技术？")], rankings=rankings
+    )
+    response = await run(agent, source=None)
+    assert response.content == "你好，有什么想了解的技术？"
+    assert model.tool_names == ["query_pypi_rankings"]
+    assert model.request_options["max_tokens"] is None
+    assert model.request_options["timeout_seconds"] == 60
+    rankings.list_rankings.assert_not_awaited()
+    learning.read_state.assert_not_called()
+    learning.read_document.assert_not_called()
+
+
+async def test_public_ranking_queries_share_one_snapshot_and_append_actual_source():
+    rankings = ranking_service()
+    agent, model, learning, lifetime = setup_agent(
+        [
+            call("query_pypi_rankings", {"projects": ["fastapi"]}),
+            call("query_pypi_rankings", {"projects": ["django", "flask"]}),
+            AIMessage(
+                content="这是所选框架在 2026 年 9 月的下载量比较。",
+                response_metadata={"model_name": "resolved/ranking-model"},
+                usage_metadata={
+                    "input_tokens": 20,
+                    "output_tokens": 5,
+                    "total_tokens": 25,
+                },
+            ),
+        ],
+        rankings=rankings,
+    )
+    response = await run(agent, source=None)
+    assert response.model == "resolved/ranking-model"
+    assert response.usage.total_tokens == 53
+    assert "统计月份：2026-09" in response.content
+    assert "精选目录：3 个包" in response.content
+    assert "快照：" + "a" * 12 in response.content
+    assert "a" * 64 not in response.content
+    assert rankings.list_rankings.return_value.source_url in response.content
+    assert not hasattr(response, "sources")
+    results = [
+        message.content
+        for message in model.seen[-1]
+        if isinstance(message, ToolMessage)
+    ]
+    assert len(results) == 2
+    first, second = [json.loads(item) for item in results]
+    assert [row["project"] for row in first["items"]] == ["fastapi"]
+    assert [row["project"] for row in second["items"]] == ["django", "flask"]
+    assert second["items"][1]["download_count"] is None
+    assert first["snapshot_id"] == second["snapshot_id"] == "a" * 64
+    rankings.list_rankings.assert_awaited_once_with()
+    learning.read_state.assert_not_called()
+    learning.read_document.assert_not_called()
+    assert lifetime["closed"]
+
+
+async def test_ranking_tool_failure_is_cached_and_does_not_expose_exception():
+    rankings = ranking_service()
+    rankings.list_rankings.side_effect = RuntimeError("private database URL " + KEY)
+    agent, model, _, _ = setup_agent(
+        [
+            call("query_pypi_rankings", {}),
+            call("query_pypi_rankings", {"query": "fastapi"}),
+            AIMessage(content="FastAPI 排名第一，下载量 999999999。"),
+        ],
+        rankings=rankings,
+    )
+    response = await run(agent, source=None)
+    rankings.list_rankings.assert_awaited_once()
+    assert "未取得可引用的统计数据" in response.content
+    assert "统计月份：" not in response.content
+    assert "快照：" not in response.content
+    assert "999999999" not in response.content
+    assert "排名第一" not in response.content
+    tool_messages = [
+        message.content
+        for message in model.seen[-1]
+        if isinstance(message, ToolMessage)
+    ]
+    assert all("rankings_unavailable" in item for item in tool_messages)
+    assert KEY not in str(model.seen)
+    assert "private database" not in str(model.seen)
+
+
+async def test_ranking_stale_snapshot_is_explicit_in_saved_answer():
+    agent, *_ = setup_agent(
+        [call("query_pypi_rankings", {}), AIMessage(content="按已取得快照比较如下。")],
+        rankings=ranking_service(stale=True),
+    )
+    assert "当前为较旧快照" in (await run(agent, source=None)).content
+
+
+async def test_ranking_tool_does_not_expand_learning_mode_permissions():
+    rankings = ranking_service()
+    agent, model, *_ = setup_agent([*reads(), answer()], rankings=rankings)
+    response = await run(agent, source="demo")
+    assert response.status == "answered"
+    assert "query_pypi_rankings" not in model.tool_names
+    rankings.list_rankings.assert_not_called()
+
+
+async def test_public_agent_cannot_call_learning_tools_by_name():
+    agent, model, learning, _ = setup_agent(
+        [
+            call("get_learning_state", {}),
+            AIMessage(content="没有私人学习记录读取权限。"),
+        ],
+        rankings=ranking_service(),
+    )
+    await run(agent, source=None)
+    assert model.tool_names == ["query_pypi_rankings"]
+    learning.read_state.assert_not_called()
+
+
+async def test_ranking_tool_and_model_budgets_stop_repeated_calls():
+    rankings = ranking_service()
+    agent, model, _, lifetime = setup_agent(
+        [call("query_pypi_rankings", {})], rankings=rankings
+    )
+    with pytest.raises(ProviderError, match="execution limit"):
+        await run(agent, source=None)
+    assert model.calls <= 3
+    rankings.list_rankings.assert_awaited_once()
+    assert lifetime["closed"]
+
+
+async def test_ranking_query_cancellation_is_not_converted_to_source_failure():
+    rankings = ranking_service()
+    started = asyncio.Event()
+
+    async def wait_for_cancel():
+        started.set()
+        await asyncio.sleep(10)
+
+    rankings.list_rankings.side_effect = wait_for_cancel
+    agent, _, _, lifetime = setup_agent(
+        [call("query_pypi_rankings", {})], rankings=rankings
+    )
+    task = asyncio.create_task(run(agent, source=None))
+    await asyncio.wait_for(started.wait(), timeout=5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert lifetime["closed"]
+
+
+async def test_parallel_ranking_calls_still_share_one_snapshot():
+    rankings = ranking_service()
+    tools = call("query_pypi_rankings", {"projects": ["fastapi"]})
+    tools.tool_calls.extend(
+        call("query_pypi_rankings", {"projects": ["django"]}).tool_calls
+    )
+    agent, model, _, _ = setup_agent(
+        [tools, AIMessage(content="按同一月份比较。")], rankings=rankings
+    )
+    response = await run(agent, source=None)
+    rankings.list_rankings.assert_awaited_once()
+    results = [
+        json.loads(message.content)
+        for message in model.seen[-1]
+        if isinstance(message, ToolMessage)
+    ]
+    assert len(results) == 2
+    assert {result["snapshot_id"] for result in results} == {"a" * 64}
+    assert "统计月份：2026-09" in response.content
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"user_id": "someone-else"},
+        {"url": "https://untrusted.invalid/"},
+        {"limit": 21},
+        {"limit": True},
+        {"projects": ["https://untrusted.invalid/"]},
+        {"category": "unknown"},
+    ],
+)
+async def test_invalid_ranking_tool_arguments_never_reach_service(arguments):
+    rankings = ranking_service()
+    agent, _, learning, _ = setup_agent(
+        [
+            call("query_pypi_rankings", arguments),
+            AIMessage(content="FastAPI 下载量 999999999，排名第一。"),
+        ],
+        rankings=rankings,
+    )
+    response = await run(agent, source=None)
+    rankings.list_rankings.assert_not_awaited()
+    learning.read_state.assert_not_called()
+    assert "快照：" not in response.content
+    assert "筛选条件无效" in response.content
+    assert "999999999" not in response.content
+    assert "排名第一" not in response.content
+
+
+async def test_ranking_tool_result_uses_existing_secret_guard():
+    rankings = ranking_service()
+    rankings.list_rankings.return_value.items[0].description = KEY
+    agent, model, _, lifetime = setup_agent(
+        [call("query_pypi_rankings", {}), AIMessage(content="Unexpected answer")],
+        rankings=rankings,
+    )
+    with pytest.raises(ProviderError) as error:
+        await run(agent, source=None)
+    assert KEY not in str(error.value)
+    assert model.calls == 1
     assert lifetime["closed"]

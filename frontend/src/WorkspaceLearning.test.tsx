@@ -2,6 +2,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import App from "./App";
+import { rankingFixture } from "./rankings.test-fixtures";
 import type { Conversation, LearningRecord, LearningSource } from "./types";
 
 const date = "2026-11-01T08:00:00Z";
@@ -24,6 +25,7 @@ function setup(initial: Conversation[] = []) {
   let conversations = initial;
   let answer = "";
   const fetchMock = vi.fn((url: string, options: RequestInit) => {
+    if (url === "/api/rankings/pypi") return Promise.resolve(json(rankingFixture));
     if (url === "/api/users/me") return Promise.resolve(json(user));
     if (url === "/api/providers/openrouter") return Promise.resolve(json(credential));
     if (url.startsWith("/api/learning/records?")) {
@@ -58,10 +60,13 @@ function setup(initial: Conversation[] = []) {
 beforeEach(() => { sessionStorage.clear(); localStorage.clear(); sessionStorage.setItem("ai-workspace:token", "test-jwt"); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-it("默认主页是学习地图，不提前读取聊天或发送模型请求", async () => {
+it("默认公开榜单，主动进入地图后读取学习记录，不提前发送模型请求", async () => {
   const fetchMock = setup([conversation("ordinary")]);
   sessionStorage.setItem("ai-workspace:learner:conversation", "ordinary");
   render(<App />);
+  await screen.findByRole("heading", { name: "精选 Python 包月度下载榜" });
+  expect(fetchMock.mock.calls.some(([url]) => url.startsWith("/api/learning/records"))).toBe(false);
+  await userEvent.click(screen.getByRole("button", { name: "学习地图" }));
   await screen.findByRole("heading", { name: "FastAPI" });
   expect(screen.getByRole("button", { name: "学习地图" }).getAttribute("aria-pressed")).toBe("true");
   expect(screen.queryByRole("textbox", { name: "消息" })).toBeNull();
@@ -73,6 +78,7 @@ it("默认主页是学习地图，不提前读取聊天或发送模型请求", a
 it("FastAPI 入口新建持久化上下文，只预填问题不自动付费发送", async () => {
   const fetchMock = setup();
   render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "学习地图" }));
   await userEvent.click(await screen.findByRole("button", { name: "继续学习 FastAPI" }));
   const input = await screen.findByRole("textbox", { name: "消息" });
   expect((input as HTMLTextAreaElement).value).toBe("根据我的学习进度，帮我继续学习 FastAPI。");
@@ -90,6 +96,7 @@ it("优先续接同来源最近的学习会话，不混用演示和 Notion 上�
     conversation("notion-latest", "notion"),
   ]);
   render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "学习地图" }));
   await userEvent.click(await screen.findByRole("button", { name: "继续学习 FastAPI" }));
   await screen.findByRole("heading", { name: "notion-latest 会话" });
   expect(fetchMock.mock.calls.some(([url]) => url === "/api/conversations/notion-latest/messages")).toBe(true);
@@ -106,8 +113,8 @@ it("优先续接同来源最近的学习会话，不混用演示和 Notion 上�
 it("学习与普通聊天共用原发送接口，刷新后仍有来源文字和上下文标签", async () => {
   const fetchMock = setup();
   const page = render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "学习地图" }));
   await userEvent.click(await screen.findByRole("button", { name: "继续学习 FastAPI" }));
-  await screen.findByText("已配置");
   await waitFor(() => expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(false));
   await userEvent.click(screen.getByRole("button", { name: "发送" }));
   await screen.findByText(/这是已保存的讲解/);

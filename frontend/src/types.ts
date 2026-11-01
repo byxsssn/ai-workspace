@@ -104,3 +104,39 @@ export interface LearningToolExecution {
   error_code: string | null;
   cached: boolean;
 }
+
+export interface PypiRankingItem {
+  project: string;
+  name: string;
+  category: string;
+  category_label: string;
+  description: string;
+  download_count: number | null;
+  rank: number | null;
+  pypi_url: string;
+}
+
+export interface PypiRanking {
+  snapshot_id: string;
+  source: string;
+  upstream: string;
+  source_url: string;
+  period: string;
+  source_updated_at: string;
+  fetched_at: string;
+  checked_at: string;
+  catalog_version: string;
+  candidate_count: number;
+  matched_count: number;
+  source_count: number;
+  filtered_count: number;
+  stale: boolean;
+  warnings: string[];
+  categories: { id: string; label: string }[];
+  items: PypiRankingItem[];
+}
+
+export interface RankingComparison {
+  projects: string[];
+  period: string;
+}

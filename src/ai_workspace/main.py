@@ -13,6 +13,7 @@ from ai_workspace.api.routes.learning_records import router as learning_records_
 from ai_workspace.api.routes.provider_credentials import (
     router as provider_credentials_router,
 )
+from ai_workspace.api.routes.rankings import router as rankings_router
 from ai_workspace.api.routes.users import router as users_router
 from ai_workspace.core.config import Settings, get_settings
 
@@ -73,6 +74,7 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
         learning_router,
         learning_chat_router,
         learning_records_router,
+        rankings_router,
     ):
         api.include_router(router)
     api.add_api_route("/health", health, methods=["GET"])

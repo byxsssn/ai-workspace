@@ -1,13 +1,18 @@
 # AI Workspace
 
-一个面向 AI 与编程的个人技术研究、分析与学习工作台。后端使用 FastAPI、SQLAlchemy 和
+一个面向 AI 与编程的技术探索、分析与个人学习工作台。后端使用 FastAPI、SQLAlchemy 和
 PostgreSQL，前端使用 React、TypeScript 和 Vite，支持用户自带 OpenRouter API 密钥（BYOK）。
-学习是首个应用场景；模型比较、技术趋势与工具目录作为后续扩展。
+公共 PyPI 月度榜单无需登录；个人助手与学习地图在登录后使用。
+模型比较、历史趋势与工具目录作为后续扩展。
+
+榜单读取真实月度快照，在版本化的 20 个精选包目录中分类、筛选和排序；缺失数据保持未知。
+网页和普通聊天的 Agent 工具共用同一套排行榜服务，浏览页面不调用模型。
+来源、统计口径、缓存与启动说明见 [PyPI 排行榜](docs/pypi-rankings.md)。
 
 学习地图展示 Notion 学习库的分类、状态、进度与笔记。从 FastAPI 卡片进入同一套会话界面，
 LangChain Agent 读取个人进度和三个受控官方章节，讲解、引用来源并保存对话。
 地图读取不调用模型；Notion 写回尚未实现。
-普通聊天和学习模式共用一套 Agent 运行链路；学习模式按会话上下文启用资料读取工具。
+普通聊天和学习模式共用一套 Agent 运行链路；普通会话可查询公共榜单，学习模式按会话上下文启用资料读取工具。
 使用与技术导读见 [统一 Agent 运行链路](docs/agent-runtime.md)、[学习地图](docs/learning-map.md)、
 [学习 Agent](docs/learning-agent.md)、[学习资料读取](docs/learning-sources.md)，
 整体方向见 [学习 Agent 计划](docs/learning-agent-plan.md)。
@@ -17,7 +22,7 @@ LangChain Agent 读取个人进度和三个受控官方章节，讲解、引用�
 - [打开 AI Workspace](https://ai-workspace-production-f76f.up.railway.app/)
 - [部署、发布、费用控制与备份恢复说明](docs/deployment.md)
 
-线上采用邀请码注册。注册后登录，在页面中保存自己的 OpenRouter 密钥，再创建会话并选择模型。
+私人功能采用邀请码注册。注册后登录，在页面中保存自己的 OpenRouter 密钥，再创建会话并选择模型。
 生产环境由同一个 HTTPS 服务提供首页、静态资源和 `/api/...` 接口。
 本地开发使用下文的 Vite 代理和独立后端入口。
 
@@ -55,11 +60,14 @@ npm run dev
 打开 <http://127.0.0.1:5173>。Windows 若限制运行 `npm.ps1`，可使用 `npm.cmd`
 代替 `npm`，无需修改 PowerShell 安全策略。
 
-1. 注册账号，再使用同一邮箱和密码登录；启用邀请注册时填写邀请码。
-2. 默认进入学习地图；配置 Notion 后读取真实记录，也可显式选择虚构的演示数据。
-3. 查看技术详情，点击 FastAPI 的“继续学习”进入助手；只有点击发送才调用模型。
-4. 在助手中保存 OpenRouter API 密钥并选择模型，例如已实测的 `openai/gpt-6-luna`。
-5. 输入消息并发送，刷新后确认会话、学习来源和消息仍然存在。也可新建普通会话。
+1. 默认进入公共 PyPI 榜单，无需登录。首次读取会获取真实上游数据；也可先运行
+   `uv run python scripts/refresh_pypi_rankings.py`。
+2. 选择 1–3 个包并点击“让助手比较”；登录后只创建普通会话、预填问题，不自动发送。
+3. 注册账号，再使用同一邮箱和密码登录；启用邀请注册时填写邀请码。
+4. 在“账户与设置”中保存 OpenRouter API 密钥，再在助手中选择支持工具调用的模型，
+   例如已实测的 `openai/gpt-6-luna`。点击发送后才产生模型调用。
+5. 从侧栏打开学习地图；配置 Notion 后读取真实记录，也可显式选择虚构的演示数据。
+   点击 FastAPI 的“继续学习”进入同一套助手，学习来源与对话历史保存于数据库。
 
 模型输入框的下拉项是示例，可直接输入其他 OpenRouter 模型 ID。
 后端没有模型列表接口；是否可用取决于账号权限和模型。
@@ -94,6 +102,7 @@ npm run preview
 | `src/ai_workspace/agents/` | 共享 AgentRunner，使用同一套 `create_agent` 执行普通与学习模式。 |
 | `src/ai_workspace/providers/` | 通用消息类型和 LangChain OpenRouter 模型工厂，管理凭据、客户端与安全边界。 |
 | `src/ai_workspace/learning/` | 学习资料读取、工具、回答结构和来源校验。 |
+| `src/ai_workspace/rankings/` | 公共 PyPI 快照、精选目录、缓存刷新和确定性查询排序。 |
 | `src/ai_workspace/core/`、`db/` | 配置、密码、JWT、凭据加密和数据库连接。 |
 | `src/ai_workspace/production.py` | 生产入口，组合首页、静态资源、API 和就绪检查。 |
 | `alembic/` | 数据库迁移，使用与应用一致的连接配置。 |
@@ -113,6 +122,7 @@ npm run preview
 | `frontend/src/AuthForm.tsx` | 注册与登录表单；注册成功后切换到登录，提交后清除密码和邀请码。 |
 | `frontend/src/CredentialSettings.tsx` | 查看密钥配置状态、保存或删除密钥；提交后立即清空输入，只接收后端返回的元信息。 |
 | `frontend/src/Workspace.tsx` | 会话列表、新建和选择会话、选择模型；当前会话和模型按用户 ID 保存在标签页中。 |
+| `frontend/src/AppShell.tsx`、`PypiRankings.tsx` | 公共与私人空间导航；真实月度榜单、筛选和进入助手比较。 |
 | `frontend/src/LearningMap.tsx` | 学习记录列表、分类与状态筛选、按需读取详情，以及进入 FastAPI 学习会话。 |
 | `frontend/src/ChatPanel.tsx` | 读取服务端历史，非流式发送，再读取已落库消息；发送锁防止重复提交，失败时保留草稿。 |
 | `frontend/src/session.ts` | 封装 `sessionStorage`；存储不可用时，仍可在当前页面中使用内存登录。 |
@@ -132,6 +142,7 @@ npm run preview
 | --- | --- |
 | `POST /users/register` | `{email, password, invite_code?}` → 用户信息，201；生产环境必须提供有效邀请码。 |
 | `POST /auth/login` | `{email, password}` → `{access_token, token_type}`。 |
+| `GET /rankings/pypi` | 无需登录；精选 Python 包月度下载榜，支持搜索、类别和包名筛选。 |
 | `GET /users/me` | 当前用户。 |
 | `GET /providers/openrouter` | 密钥元信息；未配置时返回 404。 |
 | `PUT /providers/openrouter` | `{api_key}` → 元信息；不返回明文或密文密钥。 |
@@ -179,7 +190,7 @@ flowchart LR
 `ChatService.complete_turn()` 复用 `ConversationTurnService` 检查会话归属、
 解密当前用户的密钥、复制历史与学习上下文，再结束读取事务。
 两种会话都交给 `AgentRunner.run()`，通过 LangChain `create_agent` 执行。
-普通模式不提供工具；FastAPI 学习模式提供读取学习进度和官方章节的工具，并校验回答来源。
+普通模式提供公开榜单查询工具；FastAPI 学习模式提供读取学习进度和官方章节的工具，并校验回答来源。
 生成成功后重新锁定会话，核对历史与上下文没有改变，再原子保存用户和助手两条消息。
 仓储层只执行 `flush`，业务服务负责提交与回滚。
 
@@ -194,7 +205,8 @@ SDK 原始对象与异常不直接进入 HTTP 响应。当前供应商仅为 Ope
 Token 用量用于页面展示，不作为计费账本。缺失的数值保持未知，不补零、不推算总数。
 学习模式汇总本轮多次模型调用；某项计数只在每次调用均提供有效值时求和。
 
-模式不同，限制也不同：普通聊天使用 60 秒时限，不套用学习模式的 2,000 输出 Token 上限；
+模式不同，限制也不同：普通聊天每次模型调用最多 60 秒，整轮最多 120 秒，最多三次模型调用
+和两次排行榜工具调用，不套用学习模式的 2,000 输出 Token 上限；
 学习模式每次模型请求最多 45 秒、整轮 Agent 运行最多 120 秒，每次最多 2,000 输出 Token，
 最多调用模型五次和资料工具六次。两者都使用非流式回复，推理设置与详细调用链见
 [统一 Agent 运行链路](docs/agent-runtime.md)。

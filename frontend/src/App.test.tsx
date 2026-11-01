@@ -9,6 +9,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import App from "./App";
+import { rankingFixture } from "./rankings.test-fixtures";
 
 const user = {
   id: "user-1",
@@ -54,6 +55,7 @@ function mockApi(
   const fetchMock = vi.fn((url: string, options: RequestInit) => {
     const custom = extra?.(url, options);
     if (custom) return Promise.resolve(custom);
+    if (url === "/api/rankings/pypi") return Promise.resolve(json(rankingFixture));
     if (url === "/api/users/me") return Promise.resolve(json(user));
     if (url === "/api/conversations")
       return Promise.resolve(json(conversations));
@@ -97,7 +99,8 @@ it("页面重新挂载后恢复会话和历史，退出时清除登录状态", a
   await userEvent.click(screen.getByRole("button", { name: "退出登录" }));
   expect(sessionStorage.length).toBe(0);
   expect(localStorage.length).toBe(0);
-  expect(screen.getByLabelText("密码")).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "精选 Python 包月度下载榜" })).toBeTruthy();
+  expect(screen.queryByLabelText("消息")).toBeNull();
 });
 
 it("清除过期 JWT 并显示登录页", async () => {
@@ -175,6 +178,7 @@ it("提交后清空 API 密钥输入框，且不写入浏览器存储", async ()
   render(<App />);
   await userEvent.click(await screen.findByRole("button", { name: "助手" }));
   await screen.findByText("Saved answer");
+  await userEvent.click(screen.getByRole("button", { name: "账户与设置" }));
   await screen.findByText("已配置");
   await userEvent.type(screen.getByLabelText("替换 API 密钥"), "dummy-test-key");
   await userEvent.click(screen.getByRole("button", { name: "保存密钥" }));
