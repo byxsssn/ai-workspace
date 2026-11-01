@@ -3,11 +3,11 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Response
 
-from ai_workspace.api.routes.learning import (
+from ai_workspace.api.dependencies.learning import (
     get_learning_service,
     get_learning_user_id,
-    source_http_error,
 )
+from ai_workspace.api.errors import source_http_error
 from ai_workspace.learning.catalog_models import (
     LearningRecordDetail,
     LearningRecordList,

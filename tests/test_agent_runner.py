@@ -12,7 +12,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMe
 from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field, SecretStr
 
-from ai_workspace.learning.agent import LearningAgent, _SecretGuard
+from ai_workspace.agents.runner import AgentRunner, _SecretGuard
 from ai_workspace.learning.agent_errors import LearningAgentError
 from ai_workspace.learning.config import LearningSettings
 from ai_workspace.learning.demo import demo_learning_state
@@ -38,6 +38,7 @@ class ScriptedModel(BaseChatModel):
     calls: int = 0
     seen: list[list[BaseMessage]] = Field(default_factory=list)
     tool_names: list[str] = Field(default_factory=list)
+    request_options: dict = Field(default_factory=dict)
     delay: float = 0
     fail: bool = False
 
@@ -111,9 +112,12 @@ def setup_agent(responses, *, service=None, timeout=120, **model_options):
     lifetime = {"opened": False, "closed": False}
 
     @asynccontextmanager
-    async def factory(*, api_key, model: str) -> AsyncIterator[BaseChatModel]:
+    async def factory(
+        *, api_key, model: str, **options
+    ) -> AsyncIterator[BaseChatModel]:
         assert api_key == KEY
         assert model == "test/model"
+        scripted.request_options.update(options)
         lifetime["opened"] = True
         try:
             yield scripted
@@ -122,7 +126,7 @@ def setup_agent(responses, *, service=None, timeout=120, **model_options):
 
     scripted = model
     source = service or source_service()
-    agent = LearningAgent(source, model_factory=factory, timeout_seconds=timeout)
+    agent = AgentRunner(source, model_factory=factory, timeout_seconds=timeout)
     return agent, model, source, lifetime
 
 
@@ -325,7 +329,200 @@ async def test_machine_wide_langsmith_setting_does_not_enable_tracing(monkeypatc
 @pytest.mark.parametrize("secret", ['fake-"-key', "fake-\\-key"])
 async def test_secret_guard_checks_strings_before_json_escaping(secret):
     guard = _SecretGuard((secret,))
-    with pytest.raises(LearningAgentError):
-        guard._check([HumanMessage(content="note " + secret)])
-    with pytest.raises(LearningAgentError):
+    with pytest.raises(ProviderError):
+        guard.check_payload(HumanMessage(content="note " + secret).model_dump())
+    with pytest.raises(ProviderError):
         guard.check_payload({"answer": "note " + secret})
+
+
+async def test_plain_chat_uses_same_runner_without_learning_tools_or_notion():
+    agent, model, service, lifetime = setup_agent(
+        [
+            AIMessage(
+                content="不客气！", response_metadata={"model_name": "resolved/model"}
+            )
+        ]
+    )
+    response = await run(agent, source=None)
+    assert response.content == "不客气！"
+    assert response.model == "resolved/model"
+    assert response.usage is None
+    assert not hasattr(response, "sources")
+    assert model.calls == 1
+    assert model.tool_names == []
+    assert model.request_options == {
+        "timeout_seconds": 60,
+        "max_tokens": None,
+        "reasoning_effort": None,
+    }
+    service.read_state.assert_not_called()
+    service.read_document.assert_not_called()
+    assert lifetime == {"opened": True, "closed": True}
+
+
+async def test_learning_keeps_its_own_limits_and_returns_actual_model():
+    final = answer()
+    final.response_metadata = {"model_name": "resolved/learning-model"}
+    agent, model, _, _ = setup_agent([*reads(), final])
+    response = await run(agent)
+    assert model.request_options == {
+        "timeout_seconds": 45,
+        "max_tokens": 2_000,
+        "reasoning_effort": None,
+    }
+    assert response.model == "resolved/learning-model"
+
+
+@pytest.mark.parametrize(
+    "effort", [None, "none", "minimal", "low", "medium", "high", "xhigh", "max"]
+)
+async def test_plain_chat_preserves_reasoning_option(effort):
+    agent, model, _, _ = setup_agent([AIMessage(content="Hello")])
+    await agent.run(
+        user_id=uuid4(),
+        api_key=KEY,
+        model="test/model",
+        messages=[ModelMessage(role="user", content="Hello")],
+        reasoning_effort=effort,
+    )
+    assert model.request_options["reasoning_effort"] == effort
+
+
+@pytest.mark.parametrize("source", [None, "demo"])
+async def test_input_secret_is_rejected_before_any_model_request(source):
+    agent, _, _, lifetime = setup_agent([AIMessage(content="Hello")])
+    error_type = LearningAgentError if source else ProviderError
+    with pytest.raises(error_type) as error:
+        await run(
+            agent, source=source, messages=[ModelMessage(role="user", content=KEY)]
+        )
+    assert KEY not in str(error.value)
+    assert not lifetime["opened"]
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        AIMessage(content=""),
+        AIMessage(content="  \n "),
+        AIMessage(content="partial", response_metadata={"finish_reason": "length"}),
+        AIMessage(
+            content="blocked", response_metadata={"finish_reason": "content_filter"}
+        ),
+        AIMessage(content="error", response_metadata={"finish_reason": "error"}),
+        AIMessage(content="answer", response_metadata={"model_name": ""}),
+        AIMessage(content=KEY),
+        call("read_official_doc", {"section_id": "async-tests"}),
+    ],
+)
+async def test_plain_chat_rejects_invalid_or_unfinished_output(output):
+    agent, _, service, lifetime = setup_agent([output])
+    with pytest.raises(ProviderError) as error:
+        await run(agent, source=None)
+    assert KEY not in str(error.value)
+    assert lifetime["closed"]
+    service.read_state.assert_not_called()
+    service.read_document.assert_not_called()
+
+
+async def test_partial_usage_is_not_replaced_by_langchain_zero_defaults():
+    agent, *_ = setup_agent(
+        [
+            AIMessage(
+                content="Hello",
+                response_metadata={
+                    "token_usage": {
+                        "prompt_tokens": 9,
+                        "completion_tokens": None,
+                        "total_tokens": None,
+                    }
+                },
+                usage_metadata={
+                    "input_tokens": 9,
+                    "output_tokens": 0,
+                    "total_tokens": 0,
+                },
+            )
+        ]
+    )
+    response = await run(agent, source=None)
+    assert response.usage.model_dump() == {
+        "prompt_tokens": 9,
+        "completion_tokens": None,
+        "total_tokens": None,
+    }
+
+
+async def test_learning_usage_sums_only_known_fields_across_this_turn():
+    outputs = [*reads(), answer()]
+    for output in outputs:
+        output.response_metadata = {
+            "token_usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 4,
+                "total_tokens": 14,
+            }
+        }
+    outputs[1].response_metadata["token_usage"]["completion_tokens"] = None
+    agent, *_ = setup_agent(outputs)
+    response = await run(agent)
+    assert response.usage.model_dump() == {
+        "prompt_tokens": 30,
+        "completion_tokens": None,
+        "total_tokens": 42,
+    }
+
+
+async def test_plain_chat_keeps_full_history_and_does_not_count_previous_usage():
+    history = [ModelMessage(role="system", content="Speak concisely")]
+    for _ in range(15):
+        history.extend(
+            [
+                ModelMessage(role="user", content="A" * 1_000),
+                ModelMessage(role="assistant", content="B" * 1_000),
+            ]
+        )
+    history.append(ModelMessage(role="user", content="Hello"))
+    agent, model, *_ = setup_agent(
+        [
+            AIMessage(
+                content="Hello",
+                usage_metadata={
+                    "input_tokens": 50,
+                    "output_tokens": 2,
+                    "total_tokens": 52,
+                },
+            )
+        ]
+    )
+    response = await run(agent, source=None, messages=history)
+    assert [(item.type, item.content) for item in model.seen[0]] == [
+        (
+            {"system": "system", "user": "human", "assistant": "ai"}[item.role],
+            item.content,
+        )
+        for item in history
+    ]
+    assert response.usage.total_tokens == 52
+
+
+async def test_plain_timeout_closes_resources_and_preserves_safe_error_contract():
+    agent, _, _, lifetime = setup_agent(
+        [AIMessage(content="Hello")], timeout=0.03, delay=1
+    )
+    with pytest.raises(ProviderError, match="timed out"):
+        await run(agent, source=None)
+    assert lifetime["closed"]
+
+
+async def test_plain_cancellation_propagates_and_closes_resources():
+    agent, model, _, lifetime = setup_agent([AIMessage(content="Hello")], delay=10)
+    task = asyncio.create_task(run(agent, source=None))
+    for _ in range(100):
+        if model.calls:
+            break
+        await asyncio.sleep(0.001)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert lifetime["closed"]

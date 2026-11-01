@@ -1,4 +1,4 @@
-# 第二阶段：只读学习 Agent
+# 只读学习模式
 
 2026-10-31：已接入 LangChain `create_agent`，复用第一阶段的两个资料读取器。
 后端可以读取学习进度、选择官方测试章节、讲解并给出来源，支持从数据库历史继续追问。
@@ -7,7 +7,9 @@
 
 现在可从 [学习地图](learning-map.md) 的 FastAPI 卡片进入现有聊天界面。
 普通与学习会话统一使用 `/conversations/{id}/chat`，根据数据库保存的主题与来源选择执行方式。
-普通会话不会因提到技术名称就自动获得学习工具。结构化运行记录持久化和 Notion 写回仍待实现。
+两者也共用 `AgentRunner`、`create_agent` 和 LangChain OpenRouter 模型工厂；学习模块只提供
+场景策略与资料工具。普通会话不会因提到技术名称就自动获得学习工具。结构化运行记录持久化
+和 Notion 写回仍待实现。整体链路见 [统一 Agent 运行链路](agent-runtime.md)。
 
 ## 先体验一次
 
@@ -33,14 +35,15 @@ uv run python scripts/smoke_learning_agent.py
 每轮最多五次模型调用，会产生模型费用；测试会话保留在本地应用中。
 仅检查一轮可加 `--turns 1`。脚本仅接受本地后端地址，不带 `/api` 前缀。
 
-已用本地配置的 `openai/gpt-6-luna` 验证两轮回答与上下文续接。
+统一后的真实 Notion 学习联调已通过，日期与范围见文末验证记录。
 其他模型需要单独验证工具调用兼容性；两千输出 tokens 的上限也包括模型可能使用的推理预算。
 
 ## HTTP 接口
 
 新界面在创建会话时传 `learning_topic: "fastapi"` 与 `learning_source: "demo" | "notion"`，
 随后向 `/conversations/{conversation_id}/chat` 提交普通的 `model` 和 `content`。
-下列旧接口保留兼容用途，共用同一个持久化服务，首次成功时为未绑定会话保存学习上下文：
+下列旧接口仅保留 HTTP 兼容入口，仍进入同一个 `ChatService` 和 `AgentRunner`，
+首次成功时为未绑定会话保存学习上下文：
 
 ```text
 POST /learning/fastapi/conversations/{conversation_id}/chat
@@ -57,7 +60,9 @@ Authorization: Bearer <本地登录令牌>
 }
 ```
 
-配置 Notion 后，新会话可选择 `"source": "notion"`；已有学习会话不能切换来源。
+配置 Notion 后，创建会话时选择 `"learning_source": "notion"`；兼容接口对应字段为
+`"source": "notion"`。已有学习会话不能切换来源。学习模式仍使用模型默认推理设置，
+`reasoning_effort` 只允许省略或 `null`。
 未配置或连接不属于当前用户时，在模型调用前失败。
 接口不接受用户 ID、页面 ID、API 密钥或任意文档 URL。前端代理／生产入口需要在路径前加 `/api`。
 
@@ -80,26 +85,33 @@ Authorization: Bearer <本地登录令牌>
 
 ```mermaid
 sequenceDiagram
-    participant API as 学习接口
+    participant API as 统一聊天接口
+    participant Turn as ChatService / ConversationTurnService
     participant DB as PostgreSQL
-    participant Agent as LangChain Agent
+    participant Agent as AgentRunner / create_agent
+    participant Policy as LearningPolicy
     participant Tool as 两个只读工具
-    API->>DB: 检查归属，读取凭据与历史
-    API->>DB: 结束读取事务
-    API->>Agent: 当前问题与近期历史
+    API->>Turn: 登录身份、会话与问题
+    Turn->>DB: 检查归属，读取凭据、历史与学习上下文
+    Turn->>DB: 结束读取事务
+    Turn->>Agent: 当前问题、近期历史与固定来源
+    Agent->>Policy: 校验权限，准备提示词与工具
     Agent->>Tool: 选择工具与参数
     Tool-->>Agent: 学习记录／官方正文与来源
-    Agent-->>API: 结构化回答与引用 ID
-    API->>API: 核对实际来源，生成来源链接
-    API->>DB: 短事务锁定会话，核对历史并保存
+    Agent->>Policy: 结构化回答与引用 ID
+    Policy-->>Agent: 核对实际来源，组装回答
+    Agent-->>Turn: 回答、来源与本轮摘要
+    Turn->>DB: 短事务锁定会话，核对历史与上下文后保存
 ```
 
-普通聊天和学习对话共用会话与消息表。每次学习请求都重新创建 Agent、客户端和工具上下文，
+普通聊天和学习对话共用执行器、模型工厂及会话与消息表。每次运行都重新创建 Agent 与客户端，
+学习模式额外创建工具上下文，
 不会在不同账号之间复用模型凭据或读取缓存。对话记忆来自数据库传入的历史，未使用进程内
 `MemorySaver` 冒充持久化，也没有开启外部 LangSmith 跟踪。
 
 历史上下文最多 20 条、24,000 字符，包含本轮问题；保留完整消息并从较早内容开始裁剪。
-工具最多调用六次；模型最多调用五次；总处理时间最多 120 秒。官方正文最多向模型提供
+学习模式每次模型请求最多 45 秒、整轮 Agent 运行最多 120 秒，每次最多 2,000 输出 Token；
+工具最多调用六次，模型最多调用五次。官方正文最多向模型提供
 18,000 字符，笔记最多 8,000 字符，超出时明确标记。缓存只持续本轮请求。
 
 同一学习会话生成期间若历史发生变化，保存时返回 409，避免追加基于旧历史的回答。
@@ -110,32 +122,36 @@ sequenceDiagram
 
 1. `src/ai_workspace/learning/tools.py`：看 `build_tools()`。`@tool` 提供说明和参数结构，
    实际读取仍调用 `LearningService`；身份和来源绑定在后端，不让模型传入。
-2. `src/ai_workspace/learning/agent.py`：看 `create_agent()` 与 `ainvoke()`。
-   模型提出工具调用，框架执行 Python 函数，将结果作为 `ToolMessage` 再交给模型。
-3. 同文件的 `ToolStrategy(LearningAnswer)`：让最终输出有固定字段，再检查引用是否真的存在。
-   middleware 限制循环并拦截已知凭据，业务代码仍掌握权限与结果校验。
+2. `src/ai_workspace/agents/runner.py`：看共享的 `create_agent()` 与 `ainvoke()`。
+   普通模式没有工具；学习模式由模型提出工具调用，框架执行 Python 函数，将结果作为
+   `ToolMessage` 再交给模型。middleware 限制调用次数并拦截已知凭据。
+3. `src/ai_workspace/learning/policy.py`：看学习权限、提示词、工具会话和来源核验。
+   学习模式用 `LearningAnswer` 约束最终输出，策略再核对引用并组装带来源的回答。
 4. `src/ai_workspace/services/turn.py`：看共享的数据库读取、外部调用和保存之间的事务边界。
-   `services/chat.py` 负责按会话上下文选择执行方式，`learning/chat.py` 保留学习输入限制与兼容包装。
+   `services/chat.py` 根据会话上下文调用同一个执行器；HTTP 兼容入口不另建持久化流程。
+5. `src/ai_workspace/providers/openrouter.py`：看 `open_chat_model()` 如何按模式设置限制，
+   并管理当前用户凭据与客户端生命周期。
 
 先能说明这条调用链，再按需要深入各个校验分支。
 
 ## 模型接入与依赖
 
-学习模块使用 `langchain-openrouter` 的 `ChatOpenRouter`，经 OpenRouter SDK 调用 Chat Completions；
-原普通聊天仍使用 OpenAI SDK 的 Responses 接口。两者均复用应用中当前用户的 OpenRouter 凭据。
+普通与学习模式均使用 LangChain OpenRouter 集成的 `ChatOpenRouter`，经共享
+`open_chat_model()` 调用 Chat Completions，并使用应用中当前用户的 OpenRouter 凭据。
+原普通聊天的 OpenAI Responses 适配器与学习专用模型工厂已经合并。
 读取网页用既有 `httpx2`，OpenRouter SDK 使用 `httpx`；两套客户端均有独立的资源管理。
 
 已锁定 LangChain 1.4.7、langchain-core 1.7.3、langchain-openrouter 0.2.9。
-OpenRouter SDK 当前要求 Pydantic `<2.13`，依赖解析选用了 2.12.5，并完成项目全量回归。
+OpenRouter SDK 当前要求 Pydantic `<2.13`，依赖解析选用了 2.12.5。
 Python 3.14 导入 LangChain 的旧 Pydantic v1 兼容层时可能出现警告；本项目模型使用 Pydantic v2，
-实际工具循环和后端测试均已运行验证。
+当前版本已通过实际工具循环与全量后端测试。
 
 模型客户端固定地址，关闭自动重试、重定向和缓存，按请求关闭资源。
 `ChatOpenRouter(max_retries=0)` 单独不足以关闭底层默认重试，因此工厂显式设置 SDK `retry_config=None`。
 
 ## 验证
 
-2026-10-31：后端全量 **446 项通过**，本阶段新增 **95 项**；Ruff 检查与格式检查通过。
+2026-11-01 统一运行链路后：后端全量 **542 项通过**，Ruff 检查与格式检查通过。
 测试覆盖实际框架工具循环、来源校验、用户隔离、调用次数、超时与取消、日志／凭据保护，
 以及 PostgreSQL 事务与冲突处理。模型 HTTP 协议测试使用模拟传输，不产生模型费用。
 
@@ -146,7 +162,8 @@ uv run ruff check src tests scripts
 uv run ruff format --check src tests scripts
 ```
 
-2026-10-31 两轮演示联调已通过，保存四条消息；2026-11-01 真实 Notion 数据读取已通过。
+2026-11-01 通过共享链路完成普通聊天两轮和真实 Notion 学习一轮；学习记录、官方文档
+工具与引用核验成功，对话和学习上下文已保存。详见 [统一链路验证](agent-runtime.md#验证)。
 
 实现时核对的官方资料：
 

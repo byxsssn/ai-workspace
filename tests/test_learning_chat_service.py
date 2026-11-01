@@ -16,18 +16,16 @@ from sqlalchemy.pool import NullPool
 from ai_workspace.core import encryption
 from ai_workspace.core.config import get_settings
 from ai_workspace.learning.agent_models import LearningChatResponse
-from ai_workspace.learning.chat import (
-    LearningChatService,
-    LearningConversationChangedError,
-)
 from ai_workspace.models import Conversation, Message, User
-from ai_workspace.providers import ModelMessage, ProviderId
+from ai_workspace.providers import ModelMessage, ModelResponse, ProviderId
 from ai_workspace.repositories import MessageRepository
 from ai_workspace.services import (
     ConversationNotFoundError,
     ProviderCredentialNotFoundError,
     ProviderCredentialService,
 )
+from ai_workspace.services.chat import ChatService
+from ai_workspace.services.turn import ConversationChangedError, ConversationContext
 
 pytestmark = pytest.mark.anyio
 API_KEY = "sk-or-learning-persistence-test-only"
@@ -43,6 +41,7 @@ class FakeAgent:
         error: BaseException | None = None,
         during_run: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
+        self.plain_response = ModelResponse(content="普通聊天回答", model="plain/model")
         self.session = session
         self.error = error
         self.during_run = during_run
@@ -63,8 +62,9 @@ class FakeAgent:
         api_key: str,
         model: str,
         messages: Sequence[ModelMessage],
-        source: str,
-    ) -> LearningChatResponse:
+        source: str | None = None,
+        reasoning_effort=None,
+    ) -> ModelResponse | LearningChatResponse:
         assert not self.session.in_transaction()
         self.calls.append(
             {
@@ -73,13 +73,14 @@ class FakeAgent:
                 "model": model,
                 "messages": list(messages),
                 "source": source,
+                "reasoning_effort": reasoning_effort,
             }
         )
         if self.during_run is not None:
             await self.during_run()
         if self.error is not None:
             raise self.error
-        return self.response
+        return self.plain_response if source is None else self.response
 
 
 @pytest.fixture
@@ -156,7 +157,7 @@ async def test_releases_read_transaction_and_preserves_two_turns(
     owner_id, _, conversation_id = chat_ids
     await configure_credential(db_session, owner_id)
     agent = FakeAgent(session=db_session)
-    service = LearningChatService(db_session, agent)
+    service = ChatService(db_session, agent)
     expected = HISTORY.copy()
     previous = await db_session.scalar(
         select(Conversation.updated_at).where(Conversation.id == conversation_id)
@@ -167,7 +168,7 @@ async def test_releases_read_transaction_and_preserves_two_turns(
             conversation_id=conversation_id,
             model="test-learning-model",
             content=content,
-            source="demo",
+            requested_context=ConversationContext("fastapi", "demo"),
         )
         assert response is agent.response
         call = agent.calls[-1]
@@ -194,7 +195,7 @@ async def test_rejects_before_agent_and_does_not_read_foreign_credentials(
 ) -> None:
     owner_id, other_id, conversation_id = chat_ids
     agent = FakeAgent(session=db_session)
-    service = LearningChatService(db_session, agent)
+    service = ChatService(db_session, agent)
     get_credential = AsyncMock(wraps=service.credential_service.get)
     monkeypatch.setattr(service.credential_service, "get", get_credential)
     if rejection == "credential":
@@ -209,6 +210,7 @@ async def test_rejects_before_agent_and_does_not_read_foreign_credentials(
         error = ConversationNotFoundError
     with pytest.raises(error):
         await service.complete_turn(
+            requested_context=ConversationContext("fastapi", "demo"),
             user_id=user_id,
             conversation_id=target_id,
             model="test-learning-model",
@@ -231,7 +233,8 @@ async def test_generation_failure_or_cancellation_does_not_store_a_turn(
     error = asyncio.CancelledError() if cancelled else RuntimeError("Agent failed")
     agent = FakeAgent(session=db_session, error=error)
     with pytest.raises(type(error)):
-        await LearningChatService(db_session, agent).complete_turn(
+        await ChatService(db_session, agent).complete_turn(
+            requested_context=ConversationContext("fastapi", "demo"),
             user_id=owner_id,
             conversation_id=conversation_id,
             model="test-learning-model",
@@ -278,8 +281,9 @@ async def test_rejects_answer_when_history_changed_during_generation(
         await db_session.commit()
 
     agent = FakeAgent(session=db_session, during_run=change_history)
-    with pytest.raises(LearningConversationChangedError):
-        await LearningChatService(db_session, agent).complete_turn(
+    with pytest.raises(ConversationChangedError):
+        await ChatService(db_session, agent).complete_turn(
+            requested_context=ConversationContext("fastapi", "demo"),
             user_id=owner_id,
             conversation_id=conversation_id,
             model="test-learning-model",
@@ -305,7 +309,8 @@ async def test_rechecks_ownership_after_generation(
 
     agent = FakeAgent(session=db_session, during_run=change_owner)
     with pytest.raises(ConversationNotFoundError):
-        await LearningChatService(db_session, agent).complete_turn(
+        await ChatService(db_session, agent).complete_turn(
+            requested_context=ConversationContext("fastapi", "demo"),
             user_id=owner_id,
             conversation_id=conversation_id,
             model="test-learning-model",
@@ -324,7 +329,7 @@ async def test_persistence_failure_rolls_back_both_messages(
     owner_id, _, conversation_id = chat_ids
     await configure_credential(db_session, owner_id)
     agent = FakeAgent(session=db_session)
-    service = LearningChatService(db_session, agent)
+    service = ChatService(db_session, agent)
     create = service.message_repository.create
 
     async def fail_assistant(conversation_id: UUID, role: str, content: str):
@@ -342,6 +347,7 @@ async def test_persistence_failure_rolls_back_both_messages(
         )
     with pytest.raises(RuntimeError, match="Persistence failed"):
         await service.complete_turn(
+            requested_context=ConversationContext("fastapi", "demo"),
             user_id=owner_id,
             conversation_id=conversation_id,
             model="test-learning-model",
@@ -369,7 +375,8 @@ async def test_context_is_bounded_without_cutting_individual_messages(
     await db_session.commit()
     original = await stored_messages(db_session, conversation_id)
     agent = FakeAgent(session=db_session)
-    await LearningChatService(db_session, agent).complete_turn(
+    await ChatService(db_session, agent).complete_turn(
+        requested_context=ConversationContext("fastapi", "demo"),
         user_id=owner_id,
         conversation_id=conversation_id,
         model="test-learning-model",
@@ -388,28 +395,6 @@ async def test_context_is_bounded_without_cutting_individual_messages(
         ("user", "最新问题"),
         ("assistant", ANSWER),
     ]
-
-
-class FakePlainProvider:
-    provider_id = ProviderId.OPENROUTER
-
-    def __init__(self, session, *, error=None, during_run=None):
-        from ai_workspace.providers import ModelResponse
-
-        self.session = session
-        self.error = error
-        self.during_run = during_run
-        self.calls = []
-        self.response = ModelResponse(content="普通聊天回答", model="plain/model")
-
-    async def generate(self, **kwargs):
-        assert not self.session.in_transaction()
-        self.calls.append(kwargs)
-        if self.during_run is not None:
-            await self.during_run()
-        if self.error is not None:
-            raise self.error
-        return self.response
 
 
 async def stored_context(session, conversation_id):
@@ -477,7 +462,7 @@ async def test_canonical_http_endpoint_dispatches_by_persisted_context(
     import httpx
 
     from ai_workspace.api.dependencies.auth import get_current_user
-    from ai_workspace.api.routes import chat, learning_chat
+    from ai_workspace.api.dependencies.chat import get_agent_runner
     from ai_workspace.db.session import get_db_session
     from ai_workspace.main import create_api_app
 
@@ -485,8 +470,6 @@ async def test_canonical_http_endpoint_dispatches_by_persisted_context(
     await configure_credential(db_session, owner_id)
     agent = FakeAgent(session=db_session)
     agent.response = agent.response.model_copy(update={"source": source})
-    provider = FakePlainProvider(db_session)
-    monkeypatch.setattr(chat, "OpenRouterProvider", lambda: provider)
     app = create_api_app()
     app.dependency_overrides[get_current_user] = lambda: User(id=owner_id)
 
@@ -494,7 +477,7 @@ async def test_canonical_http_endpoint_dispatches_by_persisted_context(
         yield db_session
 
     app.dependency_overrides[get_db_session] = session_override
-    app.dependency_overrides[learning_chat.get_learning_agent] = lambda: agent
+    app.dependency_overrides[get_agent_runner] = lambda: agent
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -522,7 +505,7 @@ async def test_canonical_http_endpoint_dispatches_by_persisted_context(
         listed = (await client.get("/conversations")).json()
         item = next(item for item in listed if item["id"] == str(conversation_id))
         assert item["learning_source"] == source
-    assert provider.calls == []
+    assert all(call["source"] is not None for call in agent.calls)
     assert len(agent.calls) == 2
     assert agent.calls[-1]["source"] == source
     assert agent.calls[-1]["user_id"] == owner_id
@@ -544,13 +527,13 @@ async def test_legacy_binding_is_immutable_and_canonical_turn_reuses_it(
     owner_id, _, conversation_id = chat_ids
     await configure_credential(db_session, owner_id)
     agent = FakeAgent(session=db_session)
-    legacy = LearningChatService(db_session, agent)
+    legacy = ChatService(db_session, agent)
     await legacy.complete_turn(
         user_id=owner_id,
         conversation_id=conversation_id,
         model="model",
         content="首次绑定",
-        source=source,
+        requested_context=ConversationContext("fastapi", source),
     )
     assert await stored_context(db_session, conversation_id) == ("fastapi", source)
     with pytest.raises(ConversationContextConflictError):
@@ -559,18 +542,19 @@ async def test_legacy_binding_is_immutable_and_canonical_turn_reuses_it(
             conversation_id=conversation_id,
             model="model",
             content="不能切换来源",
-            source="notion" if source == "demo" else "demo",
+            requested_context=ConversationContext(
+                "fastapi", "notion" if source == "demo" else "demo"
+            ),
         )
     assert len(agent.calls) == 1
-    provider = FakePlainProvider(db_session)
-    await ChatService(db_session, provider, learning_agent=agent).complete_turn(
+    await ChatService(db_session, agent).complete_turn(
         user_id=owner_id,
         conversation_id=conversation_id,
         model="model",
         content="继续学习",
     )
     assert agent.calls[-1]["source"] == source
-    assert provider.calls == []
+    assert all(call["source"] is not None for call in agent.calls)
     assert len(await stored_messages(db_session, conversation_id)) == len(HISTORY) + 4
 
 
@@ -583,7 +567,8 @@ async def test_failed_legacy_generation_leaves_context_unbound(
     error = asyncio.CancelledError() if cancelled else RuntimeError("generation failed")
     agent = FakeAgent(session=db_session, error=error)
     with pytest.raises(type(error)):
-        await LearningChatService(db_session, agent).complete_turn(
+        await ChatService(db_session, agent).complete_turn(
+            requested_context=ConversationContext("fastapi", "demo"),
             user_id=owner_id,
             conversation_id=conversation_id,
             model="model",
@@ -613,9 +598,8 @@ async def test_canonical_cancellation_releases_transaction_and_preserves_context
         )
         await db_session.commit()
     agent = FakeAgent(session=db_session, error=asyncio.CancelledError())
-    provider = FakePlainProvider(db_session, error=asyncio.CancelledError())
     with pytest.raises(asyncio.CancelledError):
-        await ChatService(db_session, provider, learning_agent=agent).complete_turn(
+        await ChatService(db_session, agent).complete_turn(
             user_id=owner_id,
             conversation_id=conversation_id,
             model="model",
@@ -647,8 +631,7 @@ async def test_learning_limits_do_not_change_ordinary_chat_contract(
     owner_id, _, conversation_id = chat_ids
     await configure_credential(db_session, owner_id)
     agent = FakeAgent(session=db_session)
-    provider = FakePlainProvider(db_session)
-    service = ChatService(db_session, provider, learning_agent=agent)
+    service = ChatService(db_session, agent)
     kwargs = {
         "user_id": owner_id,
         "conversation_id": conversation_id,
@@ -657,7 +640,7 @@ async def test_learning_limits_do_not_change_ordinary_chat_contract(
     }
     kwargs.update(invalid)
     await service.complete_turn(**kwargs)
-    assert len(provider.calls) == 1
+    assert len(agent.calls) == 1
     original = await stored_messages(db_session, conversation_id)
     await db_session.execute(
         update(Conversation)
@@ -671,7 +654,8 @@ async def test_learning_limits_do_not_change_ordinary_chat_contract(
     with pytest.raises(LearningChatInputError):
         await service.complete_turn(**kwargs)
     assert not db_session.in_transaction()
-    assert agent.calls == []
+    assert len(agent.calls) == 1
+    assert agent.calls[0]["source"] is None
     assert await stored_messages(db_session, conversation_id) == original
 
 
@@ -696,7 +680,7 @@ async def test_both_paths_reject_stale_turn_after_competing_request_commits(
     async def run_path(session, path, content, during_run=None):
         if path == "ordinary":
             service = ChatService(
-                session, FakePlainProvider(session, during_run=during_run)
+                session, FakeAgent(session=session, during_run=during_run)
             )
             return await service.complete_turn(
                 user_id=owner_id,
@@ -704,7 +688,7 @@ async def test_both_paths_reject_stale_turn_after_competing_request_commits(
                 model="model",
                 content=content,
             )
-        service = LearningChatService(
+        service = ChatService(
             session, FakeAgent(session=session, during_run=during_run)
         )
         return await service.complete_turn(
@@ -712,7 +696,9 @@ async def test_both_paths_reject_stale_turn_after_competing_request_commits(
             conversation_id=conversation_id,
             model="model",
             content=content,
-            source=path.removeprefix("legacy-"),
+            requested_context=ConversationContext(
+                "fastapi", path.removeprefix("legacy-")
+            ),
         )
 
     async def competing_request():

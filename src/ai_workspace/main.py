@@ -21,7 +21,7 @@ def _configure_provider_logging() -> None:
     """限制详细日志，避免记录上游请求头、请求体和 SDK 异常。"""
     loggers = [
         logging.getLogger(name)
-        for name in ("openai", "httpx2", "httpcore2", "httpx", "httpcore", "openrouter")
+        for name in ("httpx2", "httpcore2", "httpx", "httpcore", "openrouter")
     ]
     while loggers:
         logger = loggers.pop()
@@ -29,7 +29,7 @@ def _configure_provider_logging() -> None:
         loggers.extend(logger.getChildren())
 
 
-# 在 SDK 导入后执行，因为导入时可能通过 OPENAI_LOG 开启详细日志。
+# 在 SDK 导入后执行，覆盖依赖或宿主环境提前设置的详细日志级别。
 _configure_provider_logging()
 
 

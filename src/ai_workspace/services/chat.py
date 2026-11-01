@@ -4,10 +4,11 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_workspace.learning.agent_models import LearningChatResponse
+from ai_workspace.learning.chat import prepare_learning_messages
 from ai_workspace.providers import (
-    LLMProvider,
     ModelMessage,
     ModelResponse,
+    ProviderId,
     ReasoningEffort,
 )
 from ai_workspace.services.turn import (
@@ -17,22 +18,15 @@ from ai_workspace.services.turn import (
 )
 
 if TYPE_CHECKING:
-    from ai_workspace.learning.agent import LearningAgent
+    from ai_workspace.agents.runner import AgentRunner
 
 
 class ChatService:
-    """Dispatch by persisted conversation context, sharing one turn lifecycle."""
+    """Prepare conversation context, then execute every turn with one AgentRunner."""
 
-    def __init__(
-        self,
-        session: AsyncSession,
-        provider: LLMProvider,
-        *,
-        learning_agent: LearningAgent | None = None,
-    ) -> None:
+    def __init__(self, session: AsyncSession, agent: AgentRunner) -> None:
         self.session = session
-        self.provider = provider
-        self.learning_agent = learning_agent
+        self.agent = agent
         self.turn = ConversationTurnService(session)
         self.conversation_service = self.turn.conversation_service
         self.credential_service = self.turn.credential_service
@@ -46,35 +40,33 @@ class ChatService:
         model: str,
         content: str,
         reasoning_effort: ReasoningEffort | None = None,
+        requested_context: ConversationContext | None = None,
     ) -> ModelResponse | LearningChatResponse:
         async def generate(
             api_key: str,
             history: HistorySnapshot,
             context: ConversationContext,
         ) -> ModelResponse | LearningChatResponse:
-            if context.learning_topic == "fastapi":
-                from ai_workspace.learning.chat import generate_learning_response
-
-                if self.learning_agent is None or context.learning_source is None:
-                    raise RuntimeError("Learning agent is unavailable")
-                return await generate_learning_response(
-                    self.learning_agent,
-                    user_id=user_id,
-                    api_key=api_key,
+            source = context.learning_source
+            if source is not None:
+                messages = prepare_learning_messages(
                     model=model,
                     content=content,
                     history=history,
-                    source=context.learning_source,
+                    source=source,
                     reasoning_effort=reasoning_effort,
                 )
-            messages = [
-                ModelMessage(role=role, content=text) for _, role, text in history
-            ]
-            messages.append(ModelMessage(role="user", content=content))
-            return await self.provider.generate(
+            else:
+                messages = [
+                    ModelMessage(role=role, content=text) for _, role, text in history
+                ]
+                messages.append(ModelMessage(role="user", content=content))
+            return await self.agent.run(
+                user_id=user_id,
                 api_key=api_key,
                 model=model,
                 messages=messages,
+                source=source,
                 reasoning_effort=reasoning_effort,
             )
 
@@ -82,6 +74,7 @@ class ChatService:
             user_id=user_id,
             conversation_id=conversation_id,
             content=content,
-            provider_id=self.provider.provider_id,
+            provider_id=ProviderId.OPENROUTER,
             generate=generate,
+            requested_context=requested_context,
         )

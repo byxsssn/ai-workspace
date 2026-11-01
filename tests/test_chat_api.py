@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_workspace.api.dependencies.auth import get_current_user
+from ai_workspace.api.dependencies.chat import get_agent_runner
 from ai_workspace.api.routes import chat
 from ai_workspace.db.session import get_db_session
 from ai_workspace.main import app
@@ -30,6 +31,7 @@ def client_user_service(
 ) -> Iterator[tuple[TestClient, User, Mock]]:
     user = User(id=uuid4())
     session = AsyncMock(spec=AsyncSession)
+    agent = Mock()
     service_factory = Mock(return_value=Mock(spec=ChatService))
     monkeypatch.setattr(chat, "ChatService", service_factory)
 
@@ -44,6 +46,7 @@ def client_user_service(
             app.dependency_overrides, get_current_user, override_current_user
         )
         overrides.setitem(app.dependency_overrides, get_db_session, override_db_session)
+        overrides.setitem(app.dependency_overrides, get_agent_runner, lambda: agent)
         with TestClient(app) as client:
             yield client, user, service_factory
 
@@ -62,9 +65,6 @@ def test_chat_uses_authenticated_user_and_returns_provider_result(
     service.complete_turn.return_value = ModelResponse(
         content="  回答\n保持原文  ", model="actual-model", usage=usage
     )
-    provider = Mock(spec=chat.OpenRouterProvider)
-    provider_factory = Mock(return_value=provider)
-    monkeypatch.setattr(chat, "OpenRouterProvider", provider_factory)
     conversation_id = uuid4()
     content = "  问题\n保持原文  "
 
@@ -87,10 +87,12 @@ def test_chat_uses_authenticated_user_and_returns_provider_result(
         content=content,
         reasoning_effort=None,
     )
-    provider_factory.assert_called_once_with()
     service_factory.assert_called_once()
     assert isinstance(service_factory.call_args.args[0], AsyncSession)
-    assert service_factory.call_args.args[1] is provider
+    assert (
+        service_factory.call_args.args[1]
+        is app.dependency_overrides[get_agent_runner]()
+    )
 
 
 @pytest.mark.parametrize(

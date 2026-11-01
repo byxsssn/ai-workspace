@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_workspace.api.dependencies.auth import get_current_user
-from ai_workspace.api.routes.learning import get_learning_service
+from ai_workspace.api.dependencies.learning import get_learning_service
 from ai_workspace.db.session import get_db_session
 from ai_workspace.learning.demo import demo_learning_state
 from ai_workspace.learning.errors import LearningSourceError

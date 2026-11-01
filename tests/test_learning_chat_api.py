@@ -7,11 +7,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_workspace.api.dependencies.auth import get_current_user
+from ai_workspace.api.dependencies.chat import get_agent_runner
 from ai_workspace.api.routes import learning_chat
 from ai_workspace.db.session import get_db_session
 from ai_workspace.learning.agent_errors import LearningAgentError
 from ai_workspace.learning.agent_models import LearningChatResponse
-from ai_workspace.learning.chat import LearningConversationChangedError
 from ai_workspace.learning.errors import LearningSourceError
 from ai_workspace.main import create_api_app
 from ai_workspace.models import User
@@ -19,7 +19,11 @@ from ai_workspace.services import (
     ConversationNotFoundError,
     ProviderCredentialNotFoundError,
 )
-from ai_workspace.services.turn import ConversationContextConflictError
+from ai_workspace.services.turn import (
+    ConversationChangedError,
+    ConversationContext,
+    ConversationContextConflictError,
+)
 
 
 @pytest.fixture
@@ -40,7 +44,7 @@ def client_service(monkeypatch):
         )
     )
     factory = Mock(return_value=service)
-    monkeypatch.setattr(learning_chat, "LearningChatService", factory)
+    monkeypatch.setattr(learning_chat, "ChatService", factory)
 
     async def current_user():
         return user
@@ -50,7 +54,7 @@ def client_service(monkeypatch):
 
     app.dependency_overrides[get_current_user] = current_user
     app.dependency_overrides[get_db_session] = db_session
-    app.dependency_overrides[learning_chat.get_learning_agent] = lambda: agent
+    app.dependency_overrides[get_agent_runner] = lambda: agent
     with TestClient(app) as client:
         yield client, user, session, agent, service, factory, app
 
@@ -75,7 +79,7 @@ def test_uses_authenticated_identity_and_requested_source(client_service):
         conversation_id=conversation_id,
         model="test/model",
         content="继续学习",
-        source="notion",
+        requested_context=ConversationContext("fastapi", "notion"),
     )
 
 
@@ -105,7 +109,7 @@ def test_rejects_invalid_input_before_generation_without_echo(client_service, bo
         (ConversationNotFoundError("private detail"), 404, None),
         (ProviderCredentialNotFoundError("private detail"), 400, None),
         (
-            LearningConversationChangedError("private detail"),
+            ConversationChangedError("private detail"),
             409,
             "learning_conversation_changed",
         ),

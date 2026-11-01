@@ -1,47 +1,34 @@
 from typing import TYPE_CHECKING, Literal
-from uuid import UUID
 
 from pydantic import ValidationError
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from ai_workspace.learning.agent_models import LearningChatRequest, LearningChatResponse
-from ai_workspace.providers import ModelMessage, ProviderId, ReasoningEffort
-from ai_workspace.services.turn import (
-    ConversationChangedError,
-    ConversationContext,
-    ConversationTurnService,
-    HistorySnapshot,
-)
+from ai_workspace.learning.agent_models import LearningChatRequest
+from ai_workspace.providers import ModelMessage, ReasoningEffort
 
 if TYPE_CHECKING:
-    from ai_workspace.learning.agent import LearningAgent
+    from ai_workspace.services.turn import HistorySnapshot
 
 _MAX_CONTEXT_MESSAGES = 20
 _MAX_CONTEXT_CHARACTERS = 24_000
 
-# Preserve the old import and error mapping for the compatibility endpoint.
-LearningConversationChangedError = ConversationChangedError
-
 
 class LearningChatInputError(Exception):
-    """Safe validation details for learning turns arriving at the shared endpoint."""
+    """Safe validation details for learning turns at either HTTP endpoint."""
 
     def __init__(self, errors: list[dict[str, object]]) -> None:
         super().__init__("Invalid learning chat input")
         self.errors = errors
 
 
-async def generate_learning_response(
-    agent: LearningAgent,
+def prepare_learning_messages(
     *,
-    user_id: UUID,
-    api_key: str,
     model: str,
     content: str,
     history: HistorySnapshot,
     source: Literal["demo", "notion"],
     reasoning_effort: ReasoningEffort | None = None,
-) -> LearningChatResponse:
+) -> list[ModelMessage]:
+    """Validate learning input and keep a bounded context without any I/O."""
     try:
         request = LearningChatRequest(model=model, content=content, source=source)
     except ValidationError as exc:
@@ -65,58 +52,7 @@ async def generate_learning_response(
                 }
             ]
         )
-    return await agent.run(
-        user_id=user_id,
-        api_key=api_key,
-        model=request.model,
-        messages=_bounded_context(history, request.content),
-        source=request.source,
-    )
-
-
-class LearningChatService:
-    """Compatibility adapter; the shared turn service owns all persistence."""
-
-    def __init__(self, session: AsyncSession, agent: LearningAgent) -> None:
-        self.session = session
-        self.agent = agent
-        self.turn = ConversationTurnService(session)
-        self.conversation_service = self.turn.conversation_service
-        self.credential_service = self.turn.credential_service
-        self.message_repository = self.turn.message_repository
-
-    async def complete_turn(
-        self,
-        *,
-        user_id: UUID,
-        conversation_id: UUID,
-        model: str,
-        content: str,
-        source: Literal["demo", "notion"] = "demo",
-    ) -> LearningChatResponse:
-        async def generate(
-            api_key: str,
-            history: HistorySnapshot,
-            context: ConversationContext,
-        ) -> LearningChatResponse:
-            return await generate_learning_response(
-                self.agent,
-                user_id=user_id,
-                api_key=api_key,
-                model=model,
-                content=content,
-                history=history,
-                source=source,
-            )
-
-        return await self.turn.complete_turn(
-            user_id=user_id,
-            conversation_id=conversation_id,
-            content=content,
-            provider_id=ProviderId.OPENROUTER,
-            generate=generate,
-            requested_context=ConversationContext("fastapi", source),
-        )
+    return _bounded_context(history, request.content)
 
 
 def _bounded_context(snapshot: HistorySnapshot, content: str) -> list[ModelMessage]:

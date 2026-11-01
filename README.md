@@ -7,7 +7,9 @@ PostgreSQL，前端使用 React、TypeScript 和 Vite，支持用户自带 OpenR
 学习地图展示 Notion 学习库的分类、状态、进度与笔记。从 FastAPI 卡片进入同一套会话界面，
 LangChain Agent 读取个人进度和三个受控官方章节，讲解、引用来源并保存对话。
 地图读取不调用模型；Notion 写回尚未实现。
-使用与技术导读见 [学习地图](docs/learning-map.md)、[学习 Agent](docs/learning-agent.md)、[学习资料读取](docs/learning-sources.md)，
+普通聊天和学习模式共用一套 Agent 运行链路；学习模式按会话上下文启用资料读取工具。
+使用与技术导读见 [统一 Agent 运行链路](docs/agent-runtime.md)、[学习地图](docs/learning-map.md)、
+[学习 Agent](docs/learning-agent.md)、[学习资料读取](docs/learning-sources.md)，
 整体方向见 [学习 Agent 计划](docs/learning-agent-plan.md)。
 
 ## 线上使用与部署
@@ -89,7 +91,9 @@ npm run preview
 | `src/ai_workspace/services/` | 注册、登录、凭据和聊天业务；负责事务提交与回滚。 |
 | `src/ai_workspace/repositories/` | 数据库读写；执行 `flush`，由调用方决定事务何时提交。 |
 | `src/ai_workspace/models/`、`schemas/` | 分别定义数据库模型和接口请求／响应结构。 |
-| `src/ai_workspace/providers/` | 模型调用协议、通用数据类型和 OpenRouter 适配器。 |
+| `src/ai_workspace/agents/` | 共享 AgentRunner，使用同一套 `create_agent` 执行普通与学习模式。 |
+| `src/ai_workspace/providers/` | 通用消息类型和 LangChain OpenRouter 模型工厂，管理凭据、客户端与安全边界。 |
+| `src/ai_workspace/learning/` | 学习资料读取、工具、回答结构和来源校验。 |
 | `src/ai_workspace/core/`、`db/` | 配置、密码、JWT、凭据加密和数据库连接。 |
 | `src/ai_workspace/production.py` | 生产入口，组合首页、静态资源、API 和就绪检查。 |
 | `alembic/` | 数据库迁移，使用与应用一致的连接配置。 |
@@ -163,61 +167,40 @@ npm run preview
 ```mermaid
 flowchart LR
     API[HTTP 接口与依赖组装] --> Chat[聊天服务 ChatService]
-    Chat --> Turn[共享会话生命周期]
+    Chat --> Turn[ConversationTurnService]
     Turn --> DB[(凭据与历史)]
-    Turn --> Generate{按持久化上下文生成}
-    Generate --> Ordinary[普通模型适配器]
-    Generate --> Agent[学习 Agent 与工具]
-    Ordinary --> Save[行锁核对历史与来源]
-    Agent --> Save
+    Turn --> Runner[AgentRunner · create_agent]
+    Runner --> Model[共享 LangChain OpenRouter 模型]
+    Runner --> Tools[学习模式的两个只读工具]
+    Runner --> Save[行锁核对历史与来源]
     Save --> Messages[(原子保存两条消息)]
 ```
 
 `ChatService.complete_turn()` 复用 `ConversationTurnService` 检查会话归属、
 解密当前用户的密钥、复制历史与学习上下文，再结束读取事务。
-普通会话调用原模型适配器，学习会话调用 LangChain Agent。
+两种会话都交给 `AgentRunner.run()`，通过 LangChain `create_agent` 执行。
+普通模式不提供工具；FastAPI 学习模式提供读取学习进度和官方章节的工具，并校验回答来源。
 生成成功后重新锁定会话，核对历史与上下文没有改变，再原子保存用户和助手两条消息。
 仓储层只执行 `flush`，业务服务负责提交与回滚。
 
-模型协议只暴露 `provider_id` 和异步 `generate()`。输入输出使用项目自己的
-`ModelMessage`、`ModelResponse` 和 `TokenUsage`；SDK 对象和异常留在适配器内部。
-当前 `ProviderId` 仅实现 `openrouter`，固定的凭据接口由服务端选择供应商。
+`providers/openrouter.py` 的 `open_chat_model()` 是唯一模型工厂，使用 LangChain OpenRouter
+集成 `ChatOpenRouter` 调用 Chat Completions。应用消息和用量使用自己的数据结构，
+SDK 原始对象与异常不直接进入 HTTP 响应。当前供应商仅为 OpenRouter，凭据由服务端选择。
 模型名称中的 `openai/...` 不会切换到另一套供应商凭据。
 
-缺少凭据时返回安全的 400，模型服务调用失败时返回安全的 502。
-适配器拒绝不可用文本、无效模型值、响应中嵌入的上游错误，以及回显当前密钥的响应，
-并保留有效文本中的空白字符。
+缺少凭据时返回安全的 400；模型或框架失败转换为固定错误，学习运行超时返回 504。
+模型工厂和执行器检查返回内容，拒绝不可用答案及已知凭据回显，不透传上游异常正文。
 
 Token 用量用于页面展示，不作为计费账本。缺失的数值保持未知，不补零、不推算总数。
-适配器接受 SDK 已完成的数值规范化；用量格式有误时返回 `null`，仍保留有效回答。
+学习模式汇总本轮多次模型调用；某项计数只在每次调用均提供有效值时求和。
 
-### 首版的无状态 Responses 调用
+模式不同，限制也不同：普通聊天使用 60 秒时限，不套用学习模式的 2,000 输出 Token 上限；
+学习模式每次模型请求最多 45 秒、整轮 Agent 运行最多 120 秒，每次最多 2,000 输出 Token，
+最多调用模型五次和资料工具六次。两者都使用非流式回复，推理设置与详细调用链见
+[统一 Agent 运行链路](docs/agent-runtime.md)。
 
-OpenRouter 适配器使用官方 OpenAI Python SDK 的 `responses.create()`，请求地址为
-`https://openrouter.ai/api/v1/responses`，固定 `store=False`、`stream=False`。
-每次请求都提交 PostgreSQL 中的完整历史和本轮用户消息，不使用 `previous_response_id`
-或供应商侧会话。参考 [OpenRouter 无状态约定](https://openrouter.ai/docs/api_reference/responses/overview)
-和 [OpenAI Responses 迁移说明](https://developers.openai.com/api/docs/guides/migrate-to-responses)。
-
-指定 `reasoning_effort` 时，将其映射到 `reasoning.effort`；省略或传入 `null` 时，
-上游请求不包含 `reasoning`。参考 [Responses 推理配置](https://openrouter.ai/docs/api_reference/responses/reasoning)。
-
-系统和用户消息映射为 `input_text`，助手历史映射为 `output_text`。
-[OpenRouter 要求助手历史包含 id 和 status](https://openrouter.ai/docs/api_reference/responses/basic-usage)，
-因此适配器为每个请求分配内部唯一 ID，并设置 `status="completed"`。
-这些 ID 只标记当前请求中的消息，不作为供应商响应 ID 持久化。
-
-SDK 的 `Response.output_text` 按顺序汇总文本并保留空白。
-应用只接受已完成、没有错误或未完成信息、且包含有效文本的响应。
-`Response.model` 映射为项目的模型字段；`ResponseUsage.input_tokens`、`output_tokens`、
-`total_tokens` 分别映射为 `TokenUsage.prompt_tokens`、`completion_tokens`、`total_tokens`。
-OpenRouter 可能省略 SDK 标记为必填的用量明细，适配器因此使用 SDK 的宽松解析，
-只校验项目需要的字段，不重新解析原始 JSON 或强制校验整个 OpenAI 响应结构。
-
-`ChatService` 和通用模型类型不依赖 Responses 协议。
-普通路径不自动回退到其他协议；学习 Agent 使用独立的 Chat Completions 适配器。
-普通路径的 Responses 映射于 2026-10-03
-对照锁定的 OpenAI SDK 3.22.1 和官方文档完成核验。
+PostgreSQL 仍是唯一对话历史来源。每次请求重建执行上下文，没有新增 checkpoint、
+供应商侧会话或第二套消息记录。旧版本的 OpenAI Responses 适配器已由共享模型工厂替代。
 
 ## 登录、密钥与安全边界
 
@@ -230,10 +213,10 @@ OpenRouter 可能省略 SDK 标记为必填的用量明细，适配器因此使�
   响应只包含元信息；校验错误使用固定文案，避免回显输入的密钥、密码或邀请码。
 - OpenRouter 地址由适配器固定。凭据接口不接受或返回 `base_url`；数据库中的可空列
   仅为历史兼容而保留，旧值不会使用，新记录写入 `null`。
-- 每次生成独立创建并关闭 SDK 客户端。显式 BYOK Authorization 头优先于 SDK 环境配置；
-  禁止重定向，单次操作超时为 60 秒，SDK 自动重试关闭。
-- SDK 导入后，应用会将 `openai`、`httpx2`、`httpcore2` 及现有子日志器限制为 WARNING。
-  请勿开启详细 SDK／传输日志或记录上游原始对象，以免暴露请求头和异常中的凭据。
+- 每次运行独立创建并关闭模型客户端，显式使用当前用户的 BYOK 密钥。目标地址固定，
+  禁止重定向与自动重试，超时和输出上限按模式设置；不通过环境变量启用外部追踪。
+- 模型工厂关闭 SDK 调试日志，框架边界清理敏感异常。请勿开启详细 SDK／传输日志，
+  或记录上游原始对象，以免暴露请求头、会话和凭据。
 - Vite 不加载根目录的后端 `.env`，开发文件服务限制在 `frontend/`。
   不要将真实密钥写入 `VITE_*` 变量或源码。所有 API 请求关闭缓存、拒绝重定向，
   页面只显示预设的安全错误文案。
@@ -266,18 +249,14 @@ uv run pytest -q
 
 集成测试使用外层回滚事务和保存点。请勿把生产库用于测试。
 GitHub Actions 使用独立 PostgreSQL 18，同时检查前端、生产镜像以及加密备份镜像的导出与恢复。
-首次上线时已通过 244 项后端测试和 9 项前端测试，部署记录见[上线验收说明](docs/deployment.md#上线验收)。
+2026-11-01 统一运行链路后，后端 **542 项测试通过**，Ruff 检查与格式检查通过。
+既有上线记录见 [上线验收说明](docs/deployment.md#上线验收)，地图验证见
+[学习地图验证记录](docs/learning-map.md#验证与学习顺序)。
 
 供应商测试使用真实 SDK 配合 `MockTransport` 和虚拟密钥，不发起真实模型请求。
 覆盖响应映射、错误隔离、用量缺失、禁止重定向与重试、并发密钥隔离和取消清理。
-聊天服务测试使用 `FakeProvider` 验证业务和事务，另保留真实适配器的组装测试。
-独立进程还会验证 `OPENAI_LOG=debug` 及上游请求 ID 回显密钥时的日志隔离。
-
-无需 PostgreSQL 的部分测试可单独运行：
-
-```text
-uv run pytest -q tests/test_openrouter_provider.py tests/test_provider_logging.py tests/test_chat_api.py tests/test_provider_credential_api.py tests/test_provider_credential_service.py tests/test_encryption.py
-```
+执行器与模型工厂可注入测试替身；会话测试检查共享事务、归属、历史冲突和上下文绑定。
+测试覆盖普通与学习模式的隔离、资源清理、推理参数、部分用量，以及空回答与截断响应。
 
 ### 手动真实聊天验证
 
@@ -294,9 +273,9 @@ uv run python scripts/smoke_chat.py
 测试会话会保留供页面查看；脚本只打印安全状态和会话 ID，不输出 JWT 或 API 密钥。
 远程生产验证必须使用独立配置文件和 HTTPS，操作方法见[部署说明](docs/deployment.md)。
 
-模拟测试不能替代真实模型兼容性验证。`openai/gpt-6-luna` 已于 2026-10-12 完成本地真实联调，
-并于 2026-10-14 完成线上两轮聊天及刷新、重新登录、重新部署后的历史保留验证。
-其他模型和上游错误形式仍需单独核验。
+2026-11-01 使用本地配置的 `openai/gpt-6-luna` 验证共享模型工厂：普通聊天两轮、
+重新登录后历史一致性，以及真实 Notion 学习一轮均通过。学习记录与官方文档工具调用成功，
+引用、消息保存和学习上下文均核验通过。其他模型的工具调用兼容性仍需单独验证。
 
 ## 文档与注释约定
 
