@@ -2,10 +2,12 @@
 
 2026-10-31：已接入 LangChain `create_agent`，复用第一阶段的两个资料读取器。
 后端可以读取学习进度、选择官方测试章节、讲解并给出来源，支持从数据库历史继续追问。
-真实 Notion 联调仍需按 [连接说明](learning-sources.md#配置自己的-notion-连接) 配置。
+2026-11-01 已完成真实 Notion 只读接入；其他环境仍需按
+[连接说明](learning-sources.md#配置自己的-notion-连接) 配置。
 
-本阶段提供后端接口和本地联调脚本。现有聊天页面仍调用普通聊天接口；在其中输入学习问题，
-不会自动切换到 Agent。学习页面、结构化运行记录的持久化和 Notion 写回属于后续阶段。
+现在可从 [学习地图](learning-map.md) 的 FastAPI 卡片进入现有聊天界面。
+普通与学习会话统一使用 `/conversations/{id}/chat`，根据数据库保存的主题与来源选择执行方式。
+普通会话不会因提到技术名称就自动获得学习工具。结构化运行记录持久化和 Notion 写回仍待实现。
 
 ## 先体验一次
 
@@ -13,6 +15,7 @@
 
 ```powershell
 uv sync --locked
+uv run alembic upgrade head
 uv run uvicorn ai_workspace.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
@@ -24,8 +27,9 @@ uv run uvicorn ai_workspace.main:app --host 127.0.0.1 --port 8000 --reload
 uv run python scripts/smoke_learning_agent.py
 ```
 
-它会创建一个“学习 Agent 联调”会话，完成两轮真实模型请求，访问真实 FastAPI 官网，
-检查工具调用、引用和数据库中的四条消息。学习进度固定使用虚构的 demo 数据。
+它会检查地图列表与详情，创建一个“学习地图联调”会话，通过统一聊天接口完成两轮真实模型请求，
+访问真实 FastAPI 官网，检查工具调用、引用、持久化学习上下文和数据库中的四条消息。
+默认使用虚构的 demo 进度；`--source notion` 使用真实学习记录，并只打印回答字符数。
 每轮最多五次模型调用，会产生模型费用；测试会话保留在本地应用中。
 仅检查一轮可加 `--turns 1`。脚本仅接受本地后端地址，不带 `/api` 前缀。
 
@@ -34,7 +38,9 @@ uv run python scripts/smoke_learning_agent.py
 
 ## HTTP 接口
 
-先通过现有接口注册／登录、配置 OpenRouter 密钥并创建会话，再调用：
+新界面在创建会话时传 `learning_topic: "fastapi"` 与 `learning_source: "demo" | "notion"`，
+随后向 `/conversations/{conversation_id}/chat` 提交普通的 `model` 和 `content`。
+下列旧接口保留兼容用途，共用同一个持久化服务，首次成功时为未绑定会话保存学习上下文：
 
 ```text
 POST /learning/fastapi/conversations/{conversation_id}/chat
@@ -51,7 +57,8 @@ Authorization: Bearer <本地登录令牌>
 }
 ```
 
-配置 Notion 后可显式改成 `"source": "notion"`；未配置或连接不属于当前用户时，在模型调用前失败。
+配置 Notion 后，新会话可选择 `"source": "notion"`；已有学习会话不能切换来源。
+未配置或连接不属于当前用户时，在模型调用前失败。
 接口不接受用户 ID、页面 ID、API 密钥或任意文档 URL。前端代理／生产入口需要在路径前加 `/api`。
 
 响应中的主要字段：
@@ -97,7 +104,7 @@ sequenceDiagram
 
 同一学习会话生成期间若历史发生变化，保存时返回 409，避免追加基于旧历史的回答。
 这时模型调用可能已经计费，应先刷新历史再决定是否重新发送。
-原有普通聊天接口的并发策略没有在本阶段一起改写。
+普通聊天与兼容学习接口也使用相同的快照与行锁检查，不能从另一入口绕过这一保护。
 
 ## 结合项目学习代码
 
@@ -107,8 +114,8 @@ sequenceDiagram
    模型提出工具调用，框架执行 Python 函数，将结果作为 `ToolMessage` 再交给模型。
 3. 同文件的 `ToolStrategy(LearningAnswer)`：让最终输出有固定字段，再检查引用是否真的存在。
    middleware 限制循环并拦截已知凭据，业务代码仍掌握权限与结果校验。
-4. `src/ai_workspace/learning/chat.py`：看数据库读取、外部调用和保存之间的事务边界。
-   重点理解为什么不能在等待模型时一直占用数据库事务。
+4. `src/ai_workspace/services/turn.py`：看共享的数据库读取、外部调用和保存之间的事务边界。
+   `services/chat.py` 负责按会话上下文选择执行方式，`learning/chat.py` 保留学习输入限制与兼容包装。
 
 先能说明这条调用链，再按需要深入各个校验分支。
 
@@ -139,7 +146,7 @@ uv run ruff check src tests scripts
 uv run ruff format --check src tests scripts
 ```
 
-两轮真实联调已通过，保存四条消息；真实 Notion 凭据仍待用户本地配置。
+2026-10-31 两轮演示联调已通过，保存四条消息；2026-11-01 真实 Notion 数据读取已通过。
 
 实现时核对的官方资料：
 

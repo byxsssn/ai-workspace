@@ -1,3 +1,4 @@
+from typing import Literal
 from uuid import UUID
 
 from sqlalchemy import select
@@ -16,8 +17,16 @@ class ConversationRepository:
         self,
         user_id: UUID,
         title: str = "New conversation",
+        *,
+        learning_topic: Literal["fastapi"] | None = None,
+        learning_source: Literal["demo", "notion"] | None = None,
     ) -> Conversation:
-        conversation = Conversation(user_id=user_id, title=title)
+        conversation = Conversation(
+            user_id=user_id,
+            title=title,
+            learning_topic=learning_topic,
+            learning_source=learning_source,
+        )
         self.session.add(conversation)
         await self.session.flush()
         return conversation

@@ -29,7 +29,10 @@ async def create_conversation(
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> ConversationResponse:
     conversation = await ConversationService(session).create(
-        current_user.id, request.title
+        current_user.id,
+        request.title,
+        learning_topic=request.learning_topic,
+        learning_source=request.learning_source,
     )
     return ConversationResponse.model_validate(conversation)
 

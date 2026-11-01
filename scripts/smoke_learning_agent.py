@@ -2,7 +2,8 @@
 
 读取 .env 中已有 AI_WORKSPACE_TEST_EMAIL / PASSWORD / MODEL。
 复用账号已保存的 OpenRouter 凭据，不输出密钥或 JWT。
-默认使用虚构学习进度与真实官方文档；会产生模型费用并保留测试会话。
+默认使用虚构学习进度与真实官方文档；--source notion 使用真实学习记录。
+会产生模型费用并保留测试会话；真实笔记和回答不打印到终端。
 """
 
 import argparse
@@ -61,16 +62,34 @@ async def check(args: argparse.Namespace) -> dict[str, object]:
         )
         client.headers["Authorization"] = f"Bearer {login['access_token']}"
         await request("GET", "/providers/openrouter")
+        records = await request("GET", f"/learning/records?source={args.source}")
+        fastapi = next(
+            (item for item in records["items"] if item["topic_id"] == "fastapi"),
+            None,
+        )
+        if fastapi is None or fastapi["source"] != args.source:
+            raise SmokeFailure(
+                "Learning map did not expose the configured FastAPI record"
+            )
+        detail = await request(
+            "GET", f"/learning/records/{fastapi['id']}?source={args.source}"
+        )
+        if detail["id"] != fastapi["id"] or detail["source"] != args.source:
+            raise SmokeFailure("Learning map detail did not match the selected record")
         conversation = await request(
             "POST",
             "/conversations",
-            body={"title": f"学习 Agent 联调 {uuid4().hex[:8]}"},
+            body={
+                "title": f"学习地图联调 {uuid4().hex[:8]}",
+                "learning_topic": "fastapi",
+                "learning_source": args.source,
+            },
             expected=201,
         )
         conversation_id = conversation["id"]
         questions = [
             (
-                "根据演示进度继续学习 FastAPI Async Tests。先读取学习记录和官方异步测试章节，"
+                "继续学习 FastAPI Async Tests。先读取学习记录和官方异步测试章节，"
                 "简短解释 AsyncClient 和 ASGITransport 的作用，并给一道小练习。"
             ),
             (
@@ -82,8 +101,8 @@ async def check(args: argparse.Namespace) -> dict[str, object]:
         for question in questions[: args.turns]:
             result = await request(
                 "POST",
-                f"/learning/fastapi/conversations/{conversation_id}/chat",
-                body={"model": model, "content": question, "source": "demo"},
+                f"/conversations/{conversation_id}/chat",
+                body={"model": model, "content": question},
             )
             successful = {
                 item["tool"]
@@ -105,7 +124,9 @@ async def check(args: argparse.Namespace) -> dict[str, object]:
                 )
             if not any(s["source_id"] == "doc:async-tests" for s in result["sources"]):
                 raise SmokeFailure("Agent did not cite the requested official chapter")
-            if result["source"] != "demo" or "演示模式" not in result["content"]:
+            if result["source"] != args.source:
+                raise SmokeFailure("Learning source changed during the conversation")
+            if args.source == "demo" and "演示模式" not in result["content"]:
                 raise SmokeFailure("Demo learning state must be explicitly labelled")
             turns.append(
                 {
@@ -121,7 +142,28 @@ async def check(args: argparse.Namespace) -> dict[str, object]:
             raise SmokeFailure("Persisted message order did not match completed turns")
         if history[-1]["content"] != turns[-1]["answer"]:
             raise SmokeFailure("Persisted answer did not match the returned answer")
+        saved = next(
+            (
+                item
+                for item in await request("GET", "/conversations")
+                if item["id"] == conversation_id
+            ),
+            None,
+        )
+        if (
+            saved is None
+            or saved["learning_topic"] != "fastapi"
+            or saved["learning_source"] != args.source
+        ):
+            raise SmokeFailure("Learning context did not survive a conversation reload")
+        if args.source == "notion":
+            for turn in turns:
+                turn["answer_characters"] = len(turn.pop("answer"))
         return {
+            "source": args.source,
+            "map_records": len(records["items"]),
+            "map_has_more": records["has_more"],
+            "detail_notes_complete": detail["notes_complete"],
             "conversation_id": conversation_id,
             "persisted_messages": len(history),
             "turns": turns,
@@ -133,6 +175,7 @@ def main() -> int:
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--turns", type=int, choices=(1, 2), default=2)
+    parser.add_argument("--source", choices=("demo", "notion"), default="demo")
     args = parser.parse_args()
     parsed = urlsplit(args.base_url)
     if (

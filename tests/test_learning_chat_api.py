@@ -19,6 +19,7 @@ from ai_workspace.services import (
     ConversationNotFoundError,
     ProviderCredentialNotFoundError,
 )
+from ai_workspace.services.turn import ConversationContextConflictError
 
 
 @pytest.fixture
@@ -107,6 +108,11 @@ def test_rejects_invalid_input_before_generation_without_echo(client_service, bo
             LearningConversationChangedError("private detail"),
             409,
             "learning_conversation_changed",
+        ),
+        (
+            ConversationContextConflictError("private detail"),
+            409,
+            "conversation_context_conflict",
         ),
         (
             LearningSourceError("notion_not_configured", status_code=503),

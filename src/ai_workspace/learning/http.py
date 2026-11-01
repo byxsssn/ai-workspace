@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from typing import Literal
 
 import httpx2
 
@@ -25,6 +26,8 @@ async def fetch_source_bytes(
     client: httpx2.AsyncClient,
     url: str,
     *,
+    method: Literal["GET", "POST"] = "GET",
+    json_body: dict[str, object] | None = None,
     headers: dict[str, str] | None = None,
     content_types: tuple[str, ...] = ("application/json",),
     max_bytes: int = 1_500_000,
@@ -34,7 +37,11 @@ async def fetch_source_bytes(
     try:
         async with asyncio.timeout(20):
             async with client.stream(
-                "GET", url, headers=headers, follow_redirects=False
+                method,
+                url,
+                json=json_body,
+                headers=headers,
+                follow_redirects=False,
             ) as response:
                 status_code = response.status_code
                 if status_code == 429:

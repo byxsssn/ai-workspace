@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 from datetime import UTC, datetime
@@ -5,6 +6,11 @@ from uuid import UUID
 
 import httpx2
 
+from ai_workspace.learning.catalog_models import (
+    LearningRecordDetail,
+    LearningRecordList,
+    LearningRecordSummary,
+)
 from ai_workspace.learning.errors import LearningSourceError
 from ai_workspace.learning.http import fetch_source_bytes
 from ai_workspace.learning.models import LearningState
@@ -20,9 +26,20 @@ NOTION_FIELD_MAP = {
     "official_docs_url": ("官方文档", "url"),
     "evidence_url": ("成果链接", "url"),
 }
+_RECORD_FIELD_MAP = {
+    **NOTION_FIELD_MAP,
+    "category": ("类型", "select"),
+    "priority": ("求职优先级", "select"),
+}
 _NOTION_API = "https://api.notion.com/v1/pages"
+_NOTION_QUERY_API = "https://api.notion.com/v1/data_sources"
 _NOTION_VERSION = "2026-03-11"
 _UNKNOWN_BLOCK = re.compile(r"<unknown(?:\s|/?>)", re.IGNORECASE)
+_MAX_RECORDS = 200
+_QUERY_PAGE_SIZE = 100
+_MAX_QUERY_PAGES = 10
+_MAX_QUERY_BYTES = 3_000_000
+_CATALOG_TIMEOUT_SECONDS = 30
 
 
 class NotionLearningReader:
@@ -32,12 +49,7 @@ class NotionLearningReader:
         self.client = client
 
     async def read(self, *, token: str, page_id: UUID) -> LearningState:
-        if not token or any(not 33 <= ord(char) <= 126 for char in token):
-            raise LearningSourceError("source_unauthorized")
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Notion-Version": _NOTION_VERSION,
-        }
+        headers = _headers(token)
         url = f"{_NOTION_API}/{page_id}"
         page = _load_object(
             await fetch_source_bytes(
@@ -46,28 +58,8 @@ class NotionLearningReader:
             token,
         )
         _validate_identity(page, "page", page_id)
-        for flag in ("archived", "in_trash", "is_archived"):
-            if flag in page and (type(page[flag]) is not bool or page[flag]):
-                raise LearningSourceError("invalid_source_response")
-
-        warnings: list[str] = []
-        properties = page.get("properties")
-        if not isinstance(properties, dict):
-            raise LearningSourceError("source_schema_mismatch")
-        values: dict[str, str | bool | None] = {}
-        for field, (property_name, property_type) in NOTION_FIELD_MAP.items():
-            if property_name not in properties:
-                if field == "topic_name":
-                    raise LearningSourceError("source_schema_mismatch")
-                values[field] = None
-                warnings.append(f"missing_{field}")
-                continue
-            values[field] = _property_value(properties[property_name], property_type)
-        if not values["topic_name"]:
-            raise LearningSourceError("source_schema_mismatch")
-        updated_at = _updated_at(page.get("last_edited_time"))
-        if updated_at is None:
-            warnings.append("missing_source_updated_at")
+        _validate_active(page)
+        values, warnings, updated_at = _page_properties(page, NOTION_FIELD_MAP)
 
         content = _load_object(
             await fetch_source_bytes(
@@ -91,6 +83,262 @@ class NotionLearningReader:
             notes_complete=notes_complete,
             warnings=[*warnings, *content_warnings],
         )
+
+    async def list_records(
+        self,
+        *,
+        token: str,
+        data_source_id: UUID,
+        fastapi_page_id: UUID | None,
+    ) -> LearningRecordList:
+        """分页读取属性，不读取笔记；时间、条数、页数和累计响应大小均有界。"""
+        try:
+            async with asyncio.timeout(_CATALOG_TIMEOUT_SECONDS):
+                return await self._query_records(
+                    token=token,
+                    data_source_id=data_source_id,
+                    fastapi_page_id=fastapi_page_id,
+                )
+        except TimeoutError:
+            raise LearningSourceError("source_timeout", status_code=504) from None
+
+    async def _query_records(
+        self,
+        *,
+        token: str,
+        data_source_id: UUID,
+        fastapi_page_id: UUID | None,
+    ) -> LearningRecordList:
+        headers = _headers(token)
+        items: list[LearningRecordSummary] = []
+        record_ids: set[UUID] = set()
+        cursors: set[str] = set()
+        cursor = None
+        remaining_bytes = _MAX_QUERY_BYTES
+        warnings: list[str] = []
+        has_more = False
+        for _ in range(_MAX_QUERY_PAGES):
+            page_size = min(_QUERY_PAGE_SIZE, _MAX_RECORDS - len(items))
+            query: dict[str, object] = {
+                "page_size": page_size,
+                "result_type": "page",
+                "is_archived": False,
+                "sorts": [{"timestamp": "created_time", "direction": "ascending"}],
+            }
+            if cursor is not None:
+                query["start_cursor"] = cursor
+            if remaining_bytes <= 0:
+                raise LearningSourceError("source_too_large")
+            payload = await fetch_source_bytes(
+                self.client,
+                f"{_NOTION_QUERY_API}/{data_source_id}/query",
+                method="POST",
+                json_body=query,
+                headers=headers,
+                max_bytes=min(1_500_000, remaining_bytes),
+                sensitive_values=(token,),
+            )
+            remaining_bytes -= len(payload)
+            data = _load_object(payload, token)
+            results, has_more, next_cursor, incomplete = _query_page(data, page_size)
+            if incomplete and "notion_query_incomplete" not in warnings:
+                warnings.append("notion_query_incomplete")
+            for page in results:
+                record = _record_summary(
+                    page,
+                    data_source_id=data_source_id,
+                    fastapi_page_id=fastapi_page_id,
+                    detail=False,
+                )
+                if record.id in record_ids:
+                    raise LearningSourceError("invalid_source_response")
+                record_ids.add(record.id)
+                items.append(record)
+            if not has_more:
+                break
+            if next_cursor in cursors:
+                raise LearningSourceError("invalid_source_response")
+            cursors.add(next_cursor)
+            cursor = next_cursor
+            if len(items) >= _MAX_RECORDS:
+                warnings.append("record_limit_reached")
+                break
+        else:
+            warnings.append("notion_page_limit_reached")
+        return LearningRecordList(
+            source="notion",
+            items=items,
+            fetched_at=datetime.now(UTC),
+            has_more=has_more or "notion_query_incomplete" in warnings,
+            warnings=warnings,
+        )
+
+    async def read_record(
+        self,
+        *,
+        token: str,
+        data_source_id: UUID,
+        page_id: UUID,
+        fastapi_page_id: UUID | None,
+    ) -> LearningRecordDetail:
+        """只有页面属于允许的数据源且有效时，才请求其 Markdown 正文。"""
+        try:
+            async with asyncio.timeout(_CATALOG_TIMEOUT_SECONDS):
+                headers = _headers(token)
+                url = f"{_NOTION_API}/{page_id}"
+                page = _load_object(
+                    await fetch_source_bytes(
+                        self.client, url, headers=headers, sensitive_values=(token,)
+                    ),
+                    token,
+                )
+                _validate_identity(page, "page", page_id)
+                summary = _record_summary(
+                    page,
+                    data_source_id=data_source_id,
+                    fastapi_page_id=fastapi_page_id,
+                    detail=True,
+                )
+                content = _load_object(
+                    await fetch_source_bytes(
+                        self.client,
+                        f"{url}/markdown",
+                        headers=headers,
+                        sensitive_values=(token,),
+                    ),
+                    token,
+                )
+                _validate_identity(content, "page_markdown", page_id)
+                markdown, complete, warnings = _notes(content)
+                return LearningRecordDetail(
+                    **summary.model_dump(exclude={"fetched_at", "warnings"}),
+                    fetched_at=datetime.now(UTC),
+                    notes_markdown=markdown,
+                    notes_complete=complete,
+                    warnings=[*summary.warnings, *warnings],
+                )
+        except TimeoutError:
+            raise LearningSourceError("source_timeout", status_code=504) from None
+        except LearningSourceError as exc:
+            if exc.code == "source_not_found":
+                raise LearningSourceError(
+                    "learning_record_not_found", status_code=404
+                ) from None
+            raise
+
+
+def _headers(token: str) -> dict[str, str]:
+    if not token or any(not 33 <= ord(char) <= 126 for char in token):
+        raise LearningSourceError("source_unauthorized")
+    return {"Authorization": f"Bearer {token}", "Notion-Version": _NOTION_VERSION}
+
+
+def _validate_active(page: dict[str, object], *, detail: bool = False) -> None:
+    for flag in ("archived", "in_trash", "is_archived"):
+        if flag not in page:
+            continue
+        if type(page[flag]) is not bool:
+            raise LearningSourceError("invalid_source_response")
+        if page[flag]:
+            if detail:
+                raise LearningSourceError("learning_record_not_found", status_code=404)
+            raise LearningSourceError("invalid_source_response")
+
+
+def _page_properties(
+    page: dict[str, object], field_map: dict[str, tuple[str, str]]
+) -> tuple[dict[str, str | bool | None], list[str], datetime | None]:
+    warnings: list[str] = []
+    properties = page.get("properties")
+    if not isinstance(properties, dict):
+        raise LearningSourceError("source_schema_mismatch")
+    values: dict[str, str | bool | None] = {}
+    for field, (property_name, property_type) in field_map.items():
+        if property_name not in properties:
+            if field == "topic_name":
+                raise LearningSourceError("source_schema_mismatch")
+            values[field] = None
+            warnings.append(f"missing_{field}")
+            continue
+        values[field] = _property_value(properties[property_name], property_type)
+    if not values["topic_name"]:
+        raise LearningSourceError("source_schema_mismatch")
+    updated_at = _updated_at(page.get("last_edited_time"))
+    if updated_at is None:
+        warnings.append("missing_source_updated_at")
+    return values, warnings, updated_at
+
+
+def _record_summary(
+    page: object,
+    *,
+    data_source_id: UUID,
+    fastapi_page_id: UUID | None,
+    detail: bool,
+) -> LearningRecordSummary:
+    if not isinstance(page, dict) or page.get("object") != "page":
+        raise LearningSourceError("invalid_source_response")
+    try:
+        page_id = UUID(page["id"]) if isinstance(page.get("id"), str) else None
+    except ValueError:
+        raise LearningSourceError("invalid_source_response") from None
+    if page_id is None:
+        raise LearningSourceError("invalid_source_response")
+    parent = page.get("parent")
+    parent_id = None
+    if isinstance(parent, dict) and parent.get("type") == "data_source_id":
+        try:
+            if isinstance(parent.get("data_source_id"), str):
+                parent_id = UUID(parent["data_source_id"])
+        except ValueError:
+            raise LearningSourceError("invalid_source_response") from None
+    if parent_id != data_source_id:
+        if detail:
+            raise LearningSourceError("learning_record_not_found", status_code=404)
+        raise LearningSourceError("invalid_source_response")
+    _validate_active(page, detail=detail)
+    values, warnings, updated_at = _page_properties(page, _RECORD_FIELD_MAP)
+    return LearningRecordSummary(
+        id=page_id,
+        topic_id="fastapi" if page_id == fastapi_page_id else None,
+        **values,
+        source="notion",
+        source_url=f"https://www.notion.so/{page_id.hex}",
+        source_updated_at=updated_at,
+        fetched_at=datetime.now(UTC),
+        warnings=warnings,
+    )
+
+
+def _query_page(
+    data: dict[str, object], page_size: int
+) -> tuple[list[object], bool, str | None, bool]:
+    results = data.get("results")
+    has_more = data.get("has_more")
+    cursor = data.get("next_cursor")
+    if (
+        data.get("object") != "list"
+        or not isinstance(results, list)
+        or len(results) > page_size
+        or type(has_more) is not bool
+        or "next_cursor" not in data
+    ):
+        raise LearningSourceError("invalid_source_response")
+    if has_more:
+        if not isinstance(cursor, str) or not cursor or len(cursor) > 1_024:
+            raise LearningSourceError("invalid_source_response")
+    elif cursor is not None:
+        raise LearningSourceError("invalid_source_response")
+    request_status = data.get("request_status")
+    incomplete = False
+    if request_status is not None:
+        if not isinstance(request_status, dict) or request_status.get("type") not in (
+            "complete",
+            "incomplete",
+        ):
+            raise LearningSourceError("invalid_source_response")
+        incomplete = request_status["type"] == "incomplete"
+    return results, has_more, cursor, incomplete
 
 
 def _load_object(payload: bytes, token: str) -> dict[str, object]:

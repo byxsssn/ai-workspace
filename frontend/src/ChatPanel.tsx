@@ -2,13 +2,16 @@ import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { ApiError, errorMessage } from "./api";
 import type { Api } from "./api";
-import type { ChatResponse, Message } from "./types";
+import { SourceLink, sourceTime } from "./SourceLink";
+import type { ChatResponse, LearningSource, Message } from "./types";
 
 interface Props {
   api: Api;
   conversationId: string;
   model: string;
   configured: boolean;
+  learningSource?: LearningSource | null;
+  suggestedMessage?: { key: number; text: string };
   onBusy: (busy: boolean) => void;
   onSent: () => void;
 }
@@ -18,6 +21,8 @@ export function ChatPanel({
   conversationId,
   model,
   configured,
+  learningSource = null,
+  suggestedMessage,
   onBusy,
   onSent,
 }: Props) {
@@ -32,6 +37,10 @@ export function ChatPanel({
   const lifetime = useRef(new AbortController());
   const end = useRef<HTMLDivElement>(null);
   const submitting = useRef(false);
+
+  useEffect(() => {
+    if (suggestedMessage?.text) setDraft((current) => current || suggestedMessage.text);
+  }, [suggestedMessage?.key, suggestedMessage?.text]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -121,6 +130,7 @@ export function ChatPanel({
 
   return (
     <>
+      {learningSource ? <p className={`notice small ${learningSource === "demo" ? "demo-notice" : ""}`}>{learningSource === "demo" ? "本会话使用虚构学习进度，不代表你的实际情况。" : "本会话使用你的 Notion 学习记录。"}点击发送后才会调用模型并产生费用。</p> : null}
       <div className="history-toolbar">
         <span className="muted small">{messages.length} 条消息</span>
         <button
@@ -167,6 +177,9 @@ export function ChatPanel({
           {lastReply.usage?.total_tokens ?? "未返回"}
         </p>
       )}
+      {lastReply?.status === "needs_clarification" ? <p className="notice small">本轮需要补充信息或进一步核对资料，请查看回答中的说明。</p> : null}
+      {lastReply?.sources?.length ? <section className="reply-sources" aria-label="本轮引用来源"><h3>本轮引用</h3><ul>{lastReply.sources.map((citation) => <li key={citation.source_id}><SourceLink url={citation.url}>{citation.title}</SourceLink>{!citation.url ? <span>{citation.title}</span> : null}<span className="muted small">{citation.kind === "official_document" ? "官方章节" : "学习记录"} · {sourceTime(citation.fetched_at)}{citation.truncated ? " · 内容不完整" : ""}</span></li>)}</ul></section> : null}
+      {lastReply?.tool_calls?.length ? <details className="tool-summary"><summary>本轮资料读取 · {lastReply.tool_calls.length} 次</summary><ul>{lastReply.tool_calls.map((call, index) => <li key={index}>{call.tool === "get_learning_state" ? "学习进度" : `官方章节 · ${call.section_id ?? "未知"}`}<span className={call.status === "error" ? "error" : "muted"}>{call.status === "success" ? "读取成功" : "读取失败"}{call.cached ? " · 本轮缓存" : ""}</span></li>)}</ul><p className="muted small">摘要仅保留在当前页面；回答正文与来源文字已保存到历史。</p></details> : null}
       <form className="composer" onSubmit={send}>
         <label htmlFor="message">消息</label>
         <textarea
@@ -175,7 +188,8 @@ export function ChatPanel({
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           readOnly={sending}
-          placeholder="输入消息，点击发送"
+          placeholder={learningSource ? "围绕 FastAPI 提问，点击发送后开始学习" : "输入消息，点击发送"}
+          maxLength={learningSource ? 8000 : undefined}
           required
         />
         {sendError && (

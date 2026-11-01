@@ -59,6 +59,8 @@ function mockApi(
       return Promise.resolve(json(conversations));
     if (url === "/api/providers/openrouter")
       return Promise.resolve(json(credential));
+    if (url === "/api/learning/records?source=notion")
+      return Promise.resolve(json({ source: "notion", items: [], fetched_at: "2026-11-01T09:00:00Z", has_more: false, warnings: [] }));
     if (url.endsWith("/messages"))
       return Promise.resolve(json([message("m1", "Saved answer")]));
     throw new Error("Unexpected test route");
@@ -81,6 +83,7 @@ it("页面重新挂载后恢复会话和历史，退出时清除登录状态", a
   mockApi();
   sessionStorage.setItem("ai-workspace:user-1:conversation", "second");
   const page = render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "助手" }));
   await screen.findByText("Saved answer");
   expect(
     screen
@@ -89,6 +92,7 @@ it("页面重新挂载后恢复会话和历史，退出时清除登录状态", a
   ).toBe("page");
   page.unmount();
   render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "助手" }));
   await screen.findByText("Saved answer");
   await userEvent.click(screen.getByRole("button", { name: "退出登录" }));
   expect(sessionStorage.length).toBe(0);
@@ -116,6 +120,7 @@ it("切换会话后收到旧响应时仍保留新会话历史", async () => {
         : undefined,
   );
   render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "助手" }));
   await waitFor(() =>
     expect(
       fetchMock.mock.calls.some(([url]) => url.includes("/first/messages")),
@@ -146,6 +151,7 @@ it("防止重复发送，失败时保留草稿，并将模型 HTML 作为纯文�
         : undefined,
   );
   const { container } = render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "助手" }));
   await screen.findByText(html);
   expect(container.querySelector(".message-content img")).toBeNull();
   await userEvent.type(screen.getByLabelText("消息"), "Keep this draft");
@@ -167,6 +173,7 @@ it("防止重复发送，失败时保留草稿，并将模型 HTML 作为纯文�
 it("提交后清空 API 密钥输入框，且不写入浏览器存储", async () => {
   const fetchMock = mockApi();
   render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "助手" }));
   await screen.findByText("Saved answer");
   await screen.findByText("已配置");
   await userEvent.type(screen.getByLabelText("替换 API 密钥"), "dummy-test-key");

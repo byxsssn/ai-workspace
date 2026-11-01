@@ -1,13 +1,22 @@
 from datetime import datetime
+from typing import Literal, Self
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ConversationCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title: str = Field(default="New conversation", max_length=255)
+    learning_topic: Literal["fastapi"] | None = None
+    learning_source: Literal["demo", "notion"] | None = None
+
+    @model_validator(mode="after")
+    def paired_learning_context(self) -> Self:
+        if (self.learning_topic is None) != (self.learning_source is None):
+            raise ValueError("Learning topic and source must be provided together")
+        return self
 
 
 class ConversationResponse(BaseModel):
@@ -15,6 +24,8 @@ class ConversationResponse(BaseModel):
 
     id: UUID
     title: str
+    learning_topic: Literal["fastapi"] | None = None
+    learning_source: Literal["demo", "notion"] | None = None
     created_at: datetime
     updated_at: datetime
 

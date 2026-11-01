@@ -1,33 +1,42 @@
-from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ai_workspace.core.encryption import decrypt_api_key
+from ai_workspace.learning.agent_models import LearningChatResponse
 from ai_workspace.providers import (
     LLMProvider,
     ModelMessage,
     ModelResponse,
     ReasoningEffort,
 )
-from ai_workspace.repositories import MessageRepository
-from ai_workspace.services.conversation import ConversationService
-from ai_workspace.services.provider_credential import ProviderCredentialService
+from ai_workspace.services.turn import (
+    ConversationContext,
+    ConversationTurnService,
+    HistorySnapshot,
+)
+
+if TYPE_CHECKING:
+    from ai_workspace.learning.agent import LearningAgent
 
 
 class ChatService:
-    """完成一轮聊天，并在同一个事务中提交用户和助手的两条消息。
+    """Dispatch by persisted conversation context, sharing one turn lifecycle."""
 
-    调用方管理数据库会话，适配器管理请求资源。
-    生成期间保持读取事务，生成成功后才写入消息。
-    """
-
-    def __init__(self, session: AsyncSession, provider: LLMProvider) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        provider: LLMProvider,
+        *,
+        learning_agent: LearningAgent | None = None,
+    ) -> None:
         self.session = session
         self.provider = provider
-        self.conversation_service = ConversationService(session)
-        self.credential_service = ProviderCredentialService(session)
-        self.message_repository = MessageRepository(session)
+        self.learning_agent = learning_agent
+        self.turn = ConversationTurnService(session)
+        self.conversation_service = self.turn.conversation_service
+        self.credential_service = self.turn.credential_service
+        self.message_repository = self.turn.message_repository
 
     async def complete_turn(
         self,
@@ -37,41 +46,42 @@ class ChatService:
         model: str,
         content: str,
         reasoning_effort: ReasoningEffort | None = None,
-    ) -> ModelResponse:
-        try:
-            conversation = await self.conversation_service.get(conversation_id, user_id)
-            credential = await self.credential_service.get(
-                user_id, self.provider.provider_id
-            )
-            api_key = decrypt_api_key(credential.encrypted_api_key)
-            history = await self.message_repository.list_by_conversation(
-                conversation_id
-            )
+    ) -> ModelResponse | LearningChatResponse:
+        async def generate(
+            api_key: str,
+            history: HistorySnapshot,
+            context: ConversationContext,
+        ) -> ModelResponse | LearningChatResponse:
+            if context.learning_topic == "fastapi":
+                from ai_workspace.learning.chat import generate_learning_response
+
+                if self.learning_agent is None or context.learning_source is None:
+                    raise RuntimeError("Learning agent is unavailable")
+                return await generate_learning_response(
+                    self.learning_agent,
+                    user_id=user_id,
+                    api_key=api_key,
+                    model=model,
+                    content=content,
+                    history=history,
+                    source=context.learning_source,
+                    reasoning_effort=reasoning_effort,
+                )
             messages = [
-                ModelMessage(role=message.role, content=message.content)
-                for message in history
+                ModelMessage(role=role, content=text) for _, role, text in history
             ]
             messages.append(ModelMessage(role="user", content=content))
-            response = await self.provider.generate(
+            return await self.provider.generate(
                 api_key=api_key,
                 model=model,
                 messages=messages,
                 reasoning_effort=reasoning_effort,
             )
 
-            await self.message_repository.create(
-                conversation_id=conversation_id, role="user", content=content
-            )
-            await self.message_repository.create(
-                conversation_id=conversation_id,
-                role="assistant",
-                content=response.content,
-            )
-            # PostgreSQL 的 now() 对应事务开始时间，早于模型调用完成时间。
-            conversation.updated_at = datetime.now(UTC)
-            await self.session.commit()
-        except Exception:
-            await self.session.rollback()
-            raise
-
-        return response
+        return await self.turn.complete_turn(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            content=content,
+            provider_id=self.provider.provider_id,
+            generate=generate,
+        )

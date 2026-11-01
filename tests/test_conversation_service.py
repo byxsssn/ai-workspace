@@ -26,7 +26,10 @@ def test_create_normalizes_title_and_commits() -> None:
 
         assert result is conversation
         service.repository.create.assert_awaited_with(
-            user_id=user_id, title=expected_title
+            user_id=user_id,
+            title=expected_title,
+            learning_topic=None,
+            learning_source=None,
         )
         session.commit.assert_awaited()
 

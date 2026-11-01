@@ -11,6 +11,7 @@ from ai_workspace.learning.agent import LearningAgent
 from ai_workspace.learning.agent_errors import LearningAgentError
 from ai_workspace.learning.agent_models import LearningChatRequest, LearningChatResponse
 from ai_workspace.learning.chat import (
+    LearningChatInputError,
     LearningChatService,
     LearningConversationChangedError,
 )
@@ -21,6 +22,7 @@ from ai_workspace.services import (
     ConversationNotFoundError,
     ProviderCredentialNotFoundError,
 )
+from ai_workspace.services.turn import ConversationContextConflictError
 
 router = APIRouter(prefix="/learning/fastapi/conversations", tags=["learning"])
 
@@ -65,6 +67,17 @@ async def learning_chat(
             },
             headers=headers,
         ) from None
+    except ConversationContextConflictError:
+        raise HTTPException(
+            409,
+            {
+                "code": "conversation_context_conflict",
+                "message": "Conversation learning source cannot be changed",
+            },
+            headers=headers,
+        ) from None
+    except LearningChatInputError as exc:
+        raise HTTPException(422, exc.errors, headers=headers) from None
     except LearningSourceError as exc:
         raise source_http_error(exc) from None
     except LearningAgentError as exc:

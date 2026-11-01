@@ -2,6 +2,8 @@ ERROR_MESSAGES = {
     "section_not_found": "Learning section not found",
     "notion_not_configured": "Notion learning connection is not configured",
     "notion_not_available": "Notion learning connection is not available for this user",
+    "notion_catalog_not_configured": "Notion learning data source is not configured",
+    "learning_record_not_found": "Learning record not found or unavailable",
     "source_unauthorized": "Source credential is invalid or expired",
     "source_forbidden": "Source access denied; check the connection permissions",
     "source_not_found": "Source page not found or not shared with the connection",

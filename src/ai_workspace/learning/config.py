@@ -18,6 +18,7 @@ class LearningSettings(BaseSettings):
     notion_api_token: SecretStr | None = Field(default=None, min_length=1)
     notion_owner_user_id: UUID | None = None
     notion_fastapi_page_id: UUID | None = None
+    notion_learning_data_source_id: UUID | None = None
 
     @field_validator("notion_api_token")
     @classmethod

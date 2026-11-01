@@ -4,8 +4,17 @@ from uuid import UUID
 
 import httpx2
 
+from ai_workspace.learning.catalog_models import (
+    LearningRecordDetail,
+    LearningRecordList,
+    LearningRecordSource,
+)
 from ai_workspace.learning.config import LearningSettings
-from ai_workspace.learning.demo import demo_learning_state
+from ai_workspace.learning.demo import (
+    demo_learning_record,
+    demo_learning_records,
+    demo_learning_state,
+)
 from ai_workspace.learning.documents import OfficialDocumentReader
 from ai_workspace.learning.errors import LearningSourceError
 from ai_workspace.learning.models import LearningState, OfficialDocument
@@ -20,6 +29,45 @@ class LearningService:
 
     async def read_document(self, section_id: str) -> OfficialDocument:
         return await self.documents.read(section_id)
+
+    def _catalog_connection(self, user_id: UUID) -> tuple[str, UUID]:
+        """只允许已绑定用户使用服务器连接，不接受调用方提供 Notion 页或来源 ID。"""
+        settings = self.settings
+        if settings.notion_api_token is None:
+            raise LearningSourceError("notion_not_configured", status_code=503)
+        if settings.notion_owner_user_id != user_id:
+            raise LearningSourceError("notion_not_available", status_code=404)
+        if settings.notion_learning_data_source_id is None:
+            raise LearningSourceError("notion_catalog_not_configured", status_code=503)
+        return (
+            settings.notion_api_token.get_secret_value(),
+            settings.notion_learning_data_source_id,
+        )
+
+    async def list_records(
+        self, *, user_id: UUID, source: LearningRecordSource
+    ) -> LearningRecordList:
+        if source == "demo":
+            return demo_learning_records()
+        token, data_source_id = self._catalog_connection(user_id)
+        return await self.notion.list_records(
+            token=token,
+            data_source_id=data_source_id,
+            fastapi_page_id=self.settings.notion_fastapi_page_id,
+        )
+
+    async def read_record(
+        self, *, user_id: UUID, source: LearningRecordSource, record_id: UUID
+    ) -> LearningRecordDetail:
+        if source == "demo":
+            return demo_learning_record(record_id)
+        token, data_source_id = self._catalog_connection(user_id)
+        return await self.notion.read_record(
+            token=token,
+            data_source_id=data_source_id,
+            page_id=record_id,
+            fastapi_page_id=self.settings.notion_fastapi_page_id,
+        )
 
     async def read_state(
         self, *, user_id: UUID, source: Literal["demo", "notion"]

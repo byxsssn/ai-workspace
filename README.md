@@ -1,12 +1,13 @@
 # AI Workspace
 
-一个支持用户自带 API 密钥（BYOK）的多模型聊天应用，后端使用 FastAPI、SQLAlchemy 和
-PostgreSQL，前端使用 React、TypeScript 和 Vite。首版通过 OpenRouter 调用模型，
-加密保存每个用户的密钥，并提供非流式文本聊天。
+一个面向 AI 与编程的个人技术研究、分析与学习工作台。后端使用 FastAPI、SQLAlchemy 和
+PostgreSQL，前端使用 React、TypeScript 和 Vite，支持用户自带 OpenRouter API 密钥（BYOK）。
+学习是首个应用场景；模型比较、技术趋势与工具目录作为后续扩展。
 
-学习模式已提供只读 Agent 后端：根据演示或 Notion 学习记录，调用工具读取三个受控的
-FastAPI 官方章节，讲解、引用来源并保存对话。真实 Notion 联调待配置，学习页面与写回按后续阶段实现。
-使用与技术导读见 [学习 Agent](docs/learning-agent.md)、[学习资料读取](docs/learning-sources.md)，
+学习地图展示 Notion 学习库的分类、状态、进度与笔记。从 FastAPI 卡片进入同一套会话界面，
+LangChain Agent 读取个人进度和三个受控官方章节，讲解、引用来源并保存对话。
+地图读取不调用模型；Notion 写回尚未实现。
+使用与技术导读见 [学习地图](docs/learning-map.md)、[学习 Agent](docs/learning-agent.md)、[学习资料读取](docs/learning-sources.md)，
 整体方向见 [学习 Agent 计划](docs/learning-agent-plan.md)。
 
 ## 线上使用与部署
@@ -53,9 +54,10 @@ npm run dev
 代替 `npm`，无需修改 PowerShell 安全策略。
 
 1. 注册账号，再使用同一邮箱和密码登录；启用邀请注册时填写邀请码。
-2. 在左侧保存 OpenRouter API 密钥；页面只显示是否已配置。
-3. 新建会话，选择或输入完整模型 ID，例如已实测的 `openai/gpt-6-luna`。
-4. 输入消息并点击发送，等待完整回复后刷新页面，确认历史消息仍然存在。
+2. 默认进入学习地图；配置 Notion 后读取真实记录，也可显式选择虚构的演示数据。
+3. 查看技术详情，点击 FastAPI 的“继续学习”进入助手；只有点击发送才调用模型。
+4. 在助手中保存 OpenRouter API 密钥并选择模型，例如已实测的 `openai/gpt-6-luna`。
+5. 输入消息并发送，刷新后确认会话、学习来源和消息仍然存在。也可新建普通会话。
 
 模型输入框的下拉项是示例，可直接输入其他 OpenRouter 模型 ID。
 后端没有模型列表接口；是否可用取决于账号权限和模型。
@@ -107,6 +109,7 @@ npm run preview
 | `frontend/src/AuthForm.tsx` | 注册与登录表单；注册成功后切换到登录，提交后清除密码和邀请码。 |
 | `frontend/src/CredentialSettings.tsx` | 查看密钥配置状态、保存或删除密钥；提交后立即清空输入，只接收后端返回的元信息。 |
 | `frontend/src/Workspace.tsx` | 会话列表、新建和选择会话、选择模型；当前会话和模型按用户 ID 保存在标签页中。 |
+| `frontend/src/LearningMap.tsx` | 学习记录列表、分类与状态筛选、按需读取详情，以及进入 FastAPI 学习会话。 |
 | `frontend/src/ChatPanel.tsx` | 读取服务端历史，非流式发送，再读取已落库消息；发送锁防止重复提交，失败时保留草稿。 |
 | `frontend/src/session.ts` | 封装 `sessionStorage`；存储不可用时，仍可在当前页面中使用内存登录。 |
 
@@ -130,15 +133,17 @@ npm run preview
 | `PUT /providers/openrouter` | `{api_key}` → 元信息；不返回明文或密文密钥。 |
 | `DELETE /providers/openrouter` | 成功时返回 204。 |
 | `GET /conversations` | 当前用户的会话列表。 |
-| `POST /conversations` | `{title}` → 新会话，201。 |
+| `POST /conversations` | `{title, learning_topic?, learning_source?}` → 新会话，201；学习字段须成对提供。 |
 | `GET /conversations/{id}/messages` | `[{id, role, content, created_at}]`。 |
-| `POST /conversations/{id}/chat` | `{model, content, reasoning_effort?}` → `{content, model, usage}`。 |
+| `POST /conversations/{id}/chat` | `{model, content, reasoning_effort?}` → `{content, model, usage}`；学习会话额外返回来源与工具摘要。 |
+| `GET /learning/records?source=notion` | 学习地图摘要列表；支持显式 `source=demo`。 |
+| `GET /learning/records/{id}?source=notion` | 所属学习库内的一条记录与笔记。 |
 
 读取消息前，`ConversationService.get()` 会检查会话归属，再由
 `MessageRepository.list_by_conversation()` 按 `created_at ASC, id ASC` 读取消息。
 其他用户的会话和不存在的会话统一返回 404，未登录返回 401；响应禁止缓存。
 
-聊天请求可用 `reasoning_effort` 指定本轮推理强度：
+普通聊天请求可用 `reasoning_effort` 指定本轮推理强度；学习会话目前只接受省略或 `null`：
 
 ```json
 {
@@ -158,17 +163,20 @@ npm run preview
 ```mermaid
 flowchart LR
     API[HTTP 接口与依赖组装] --> Chat[聊天服务 ChatService]
-    Chat --> Credentials[用户凭据服务]
-    Credentials --> DB[(加密凭据)]
-    Chat --> Contract[模型协议 LLMProvider]
-    Contract --> Router[OpenRouter 适配器]
-    Router --> SDK[OpenAI SDK Responses 接口]
-    Chat --> Messages[(会话消息)]
+    Chat --> Turn[共享会话生命周期]
+    Turn --> DB[(凭据与历史)]
+    Turn --> Generate{按持久化上下文生成}
+    Generate --> Ordinary[普通模型适配器]
+    Generate --> Agent[学习 Agent 与工具]
+    Ordinary --> Save[行锁核对历史与来源]
+    Agent --> Save
+    Save --> Messages[(原子保存两条消息)]
 ```
 
-`ChatService.complete_turn()` 先检查会话归属，根据注入适配器的 `provider_id`
-查找并解密当前用户的密钥，再把历史消息交给 `generate()`。
-模型生成成功后，在同一个数据库事务中保存用户和助手的两条消息。
+`ChatService.complete_turn()` 复用 `ConversationTurnService` 检查会话归属、
+解密当前用户的密钥、复制历史与学习上下文，再结束读取事务。
+普通会话调用原模型适配器，学习会话调用 LangChain Agent。
+生成成功后重新锁定会话，核对历史与上下文没有改变，再原子保存用户和助手两条消息。
 仓储层只执行 `flush`，业务服务负责提交与回滚。
 
 模型协议只暴露 `provider_id` 和异步 `generate()`。输入输出使用项目自己的
@@ -207,7 +215,8 @@ OpenRouter 可能省略 SDK 标记为必填的用量明细，适配器因此使�
 只校验项目需要的字段，不重新解析原始 JSON 或强制校验整个 OpenAI 响应结构。
 
 `ChatService` 和通用模型类型不依赖 Responses 协议。
-当前没有 Chat Completions 实现或自动回退。该映射于 2026-10-03
+普通路径不自动回退到其他协议；学习 Agent 使用独立的 Chat Completions 适配器。
+普通路径的 Responses 映射于 2026-10-03
 对照锁定的 OpenAI SDK 3.22.1 和官方文档完成核验。
 
 ## 登录、密钥与安全边界
@@ -231,9 +240,9 @@ OpenRouter 可能省略 SDK 标记为必填的用量明细，适配器因此使�
 - 消息表暂不保存模型和 Token 用量，页面仅即时展示本轮信息，刷新后不会补造这些数据。
 
 普通聊天暂不包含流式回复、重试与备用模型、客户端缓存、供应商注册表、能力解析或 RAG。
-该聊天流程生成期间会保持读取事务，也未对同一会话的并发请求进行串行化；后续设计 SSE 时需同时考虑
-事务时长、取消和消息顺序。数据库提交失败无法撤销已经计费的模型调用。
-独立学习 Agent 接口采用短事务，并在保存时检查会话历史是否变化，详见学习 Agent 文档。
+普通和学习聊天在生成期间均释放读取事务，保存阶段使用行锁与历史／上下文快照检查。
+并发冲突返回 409；模型可能已计费，因此先刷新历史再决定是否重发。
+数据库提交失败无法撤销已经计费的模型调用，详见学习地图与学习 Agent 文档。
 
 ## 验证与测试
 

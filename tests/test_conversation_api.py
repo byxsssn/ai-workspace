@@ -76,10 +76,14 @@ def test_create_conversation_returns_201(
     assert response.json() == {
         "id": str(conversation.id),
         "title": "Created conversation",
+        "learning_topic": None,
+        "learning_source": None,
         "created_at": "2026-09-24T12:00:00Z",
         "updated_at": "2026-09-24T13:00:00Z",
     }
-    service.create.assert_awaited_with(user.id, "Created conversation")
+    service.create.assert_awaited_with(
+        user.id, "Created conversation", learning_topic=None, learning_source=None
+    )
 
 
 def test_list_conversations_returns_200_in_service_order(
@@ -97,12 +101,16 @@ def test_list_conversations_returns_200_in_service_order(
         {
             "id": str(first.id),
             "title": "First conversation",
+            "learning_topic": None,
+            "learning_source": None,
             "created_at": "2026-09-24T12:00:00Z",
             "updated_at": "2026-09-24T13:00:00Z",
         },
         {
             "id": str(second.id),
             "title": "Second conversation",
+            "learning_topic": None,
+            "learning_source": None,
             "created_at": "2026-09-24T12:00:00Z",
             "updated_at": "2026-09-24T13:00:00Z",
         },
@@ -123,6 +131,8 @@ def test_get_conversation_returns_200(
     assert response.json() == {
         "id": str(conversation.id),
         "title": "Existing conversation",
+        "learning_topic": None,
+        "learning_source": None,
         "created_at": "2026-09-24T12:00:00Z",
         "updated_at": "2026-09-24T13:00:00Z",
     }
@@ -255,6 +265,68 @@ def test_update_conversation_title_returns_422_for_invalid_title(
     response = client.patch(
         f"/conversations/{conversation_id}",
         json={"title": invalid_title},
+    )
+    assert response.status_code == 422
+    service.update_title.assert_not_called()
+
+
+@pytest.mark.parametrize("source", ["demo", "notion"])
+def test_create_learning_conversation_preserves_context(client_user_service, source):
+    client, user, service = client_user_service
+    conversation = make_conversation(user.id, "FastAPI")
+    conversation.learning_topic = "fastapi"
+    conversation.learning_source = source
+    service.create.return_value = conversation
+    service.list_for_user.return_value = [conversation]
+    service.get.return_value = conversation
+    response = client.post(
+        "/conversations",
+        json={
+            "title": "FastAPI",
+            "learning_topic": "fastapi",
+            "learning_source": source,
+        },
+    )
+    assert response.status_code == 201
+    service.create.assert_awaited_once_with(
+        user.id, "FastAPI", learning_topic="fastapi", learning_source=source
+    )
+    for item in (
+        response.json(),
+        client.get("/conversations").json()[0],
+        client.get(f"/conversations/{conversation.id}").json(),
+    ):
+        assert item["learning_topic"] == "fastapi"
+        assert item["learning_source"] == source
+
+
+@pytest.mark.parametrize(
+    "context",
+    [
+        {"learning_topic": "fastapi"},
+        {"learning_source": "demo"},
+        {"learning_topic": "other", "learning_source": "demo"},
+        {"learning_topic": "fastapi", "learning_source": "other"},
+        {"learning_topic": "fastapi", "learning_source": "demo", "page_id": "private"},
+    ],
+)
+def test_rejects_partial_unknown_or_arbitrary_learning_context(
+    client_user_service, context
+):
+    client, _, service = client_user_service
+    assert client.post("/conversations", json=context).status_code == 422
+    service.create.assert_not_called()
+
+
+def test_learning_context_cannot_be_changed_with_title_update(client_user_service):
+    client, _, service = client_user_service
+    response = client.patch(
+        f"/conversations/{uuid4()}",
+        json={
+            "title": "renamed",
+            "learning_topic": "fastapi",
+            "learning_source": "notion",
+        },
     )
     assert response.status_code == 422
     service.update_title.assert_not_called()

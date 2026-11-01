@@ -21,6 +21,35 @@ async def check(args: argparse.Namespace) -> dict[str, object]:
     async with create_source_client() as client:
         service = LearningService(settings, client)
         state = await service.read_state(user_id=local_user_id, source=args.source)
+        learning_map = None
+        if args.map:
+            records = await service.list_records(
+                user_id=local_user_id, source=args.source
+            )
+            fastapi = next(
+                (item for item in records.items if item.topic_id == "fastapi"), None
+            )
+            detail = (
+                await service.read_record(
+                    user_id=local_user_id,
+                    source=args.source,
+                    record_id=fastapi.id,
+                )
+                if fastapi is not None
+                else None
+            )
+            learning_map = {
+                "records": len(records.items),
+                "has_more": records.has_more,
+                "warnings": records.warnings,
+                "fastapi_found": fastapi is not None,
+                "detail_notes_characters": len(detail.notes_markdown)
+                if detail is not None
+                else None,
+                "detail_notes_complete": detail.notes_complete
+                if detail is not None
+                else None,
+            }
         section_ids = (
             [section.id for section in SECTIONS]
             if args.all_sections
@@ -45,6 +74,7 @@ async def check(args: argparse.Namespace) -> dict[str, object]:
             "notes_characters": len(state.notes_markdown),
             "notes_complete": state.notes_complete,
             "warnings": state.warnings,
+            **({"learning_map": learning_map} if learning_map is not None else {}),
             "documents": documents,
         }
 
@@ -58,6 +88,11 @@ def main() -> int:
         default="async-tests",
     )
     parser.add_argument("--all-sections", action="store_true")
+    parser.add_argument(
+        "--map",
+        action="store_true",
+        help="Also check the learning map and FastAPI detail",
+    )
     args = parser.parse_args()
     try:
         result = asyncio.run(check(args))

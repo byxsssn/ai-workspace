@@ -241,3 +241,96 @@ def test_chat_requires_authentication_and_rejects_invalid_or_user_selected_ident
     assert response.status_code == 401
     assert response.headers["WWW-Authenticate"] == "Bearer"
     service_factory.assert_not_called()
+
+
+def test_shared_endpoint_preserves_learning_response_fields(client_user_service):
+    from ai_workspace.learning.agent_models import LearningChatResponse
+
+    client, _, service_factory = client_user_service
+    result = LearningChatResponse(
+        content="演示模式：学习回答。",
+        model="model",
+        source="demo",
+        status="needs_clarification",
+        sources=[],
+        tool_calls=[],
+    )
+    service_factory.return_value.complete_turn.return_value = result
+    response = client.post(
+        f"/conversations/{uuid4()}/chat",
+        json={
+            "model": "model",
+            "content": "继续学习",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json() == result.model_dump()
+    assert response.headers["Cache-Control"] == "no-store"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"source": "demo"},
+        {"learning_source": "notion"},
+        {"page_id": "private"},
+    ],
+)
+def test_shared_endpoint_does_not_take_learning_context_from_request(
+    client_user_service, body
+):
+    client, _, service_factory = client_user_service
+    response = client.post(
+        f"/conversations/{uuid4()}/chat",
+        json={
+            "model": "model",
+            "content": "question",
+            **body,
+        },
+    )
+    assert response.status_code == 422
+    service_factory.assert_not_called()
+
+
+def test_shared_endpoint_returns_safe_conflict_for_changed_history(client_user_service):
+    from ai_workspace.services.turn import ConversationChangedError
+
+    client, _, service_factory = client_user_service
+    service_factory.return_value.complete_turn.side_effect = ConversationChangedError(
+        "private"
+    )
+    response = client.post(
+        f"/conversations/{uuid4()}/chat",
+        json={
+            "model": "model",
+            "content": "question",
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "conversation_changed"
+    assert "private" not in response.text
+
+
+def test_shared_endpoint_reports_learning_validation_without_echoing_input(
+    client_user_service,
+):
+    from ai_workspace.learning.chat import LearningChatInputError
+
+    client, _, service_factory = client_user_service
+    errors = [
+        {"loc": ["body", "content"], "type": "string_too_long", "msg": "Invalid value"}
+    ]
+    service_factory.return_value.complete_turn.side_effect = LearningChatInputError(
+        errors
+    )
+    response = client.post(
+        f"/conversations/{uuid4()}/chat",
+        json={
+            "model": "model",
+            "content": "private question",
+        },
+    )
+    assert response.status_code == 422
+    assert response.json() == {"detail": errors}
+    assert "private question" not in response.text
+    assert response.headers["Cache-Control"] == "no-store"
