@@ -7,23 +7,30 @@ from fastapi.responses import JSONResponse
 from ai_workspace.api.routes.auth import router as auth_router
 from ai_workspace.api.routes.chat import router as chat_router
 from ai_workspace.api.routes.conversations import router as conversations_router
+from ai_workspace.api.routes.learning import router as learning_router
+from ai_workspace.api.routes.learning_chat import router as learning_chat_router
+from ai_workspace.api.routes.learning_records import router as learning_records_router
 from ai_workspace.api.routes.provider_credentials import (
     router as provider_credentials_router,
 )
+from ai_workspace.api.routes.rankings import router as rankings_router
 from ai_workspace.api.routes.users import router as users_router
 from ai_workspace.core.config import Settings, get_settings
 
 
 def _configure_provider_logging() -> None:
     """限制详细日志，避免记录上游请求头、请求体和 SDK 异常。"""
-    loggers = [logging.getLogger(name) for name in ("openai", "httpx2", "httpcore2")]
+    loggers = [
+        logging.getLogger(name)
+        for name in ("httpx2", "httpcore2", "httpx", "httpcore", "openrouter")
+    ]
     while loggers:
         logger = loggers.pop()
         logger.setLevel(logging.WARNING)
         loggers.extend(logger.getChildren())
 
 
-# 在 SDK 导入后执行，因为导入时可能通过 OPENAI_LOG 开启详细日志。
+# 在 SDK 导入后执行，覆盖依赖或宿主环境提前设置的详细日志级别。
 _configure_provider_logging()
 
 
@@ -64,6 +71,10 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
         conversations_router,
         chat_router,
         provider_credentials_router,
+        learning_router,
+        learning_chat_router,
+        learning_records_router,
+        rankings_router,
     ):
         api.include_router(router)
     api.add_api_route("/health", health, methods=["GET"])

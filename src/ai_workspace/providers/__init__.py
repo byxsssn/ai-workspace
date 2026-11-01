@@ -1,4 +1,3 @@
-from ai_workspace.providers.base import LLMProvider
 from ai_workspace.providers.errors import ProviderError
 from ai_workspace.providers.types import (
     ModelMessage,
@@ -9,7 +8,6 @@ from ai_workspace.providers.types import (
 )
 
 __all__ = [
-    "LLMProvider",
     "ModelMessage",
     "ModelResponse",
     "ProviderError",

@@ -10,6 +10,7 @@ from ai_workspace.models import User
 from ai_workspace.schemas import (
     ConversationCreateRequest,
     ConversationResponse,
+    ConversationUpdateTitleRequest,
     MessageResponse,
 )
 from ai_workspace.services import ConversationNotFoundError, ConversationService
@@ -28,7 +29,10 @@ async def create_conversation(
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> ConversationResponse:
     conversation = await ConversationService(session).create(
-        current_user.id, request.title
+        current_user.id,
+        request.title,
+        learning_topic=request.learning_topic,
+        learning_source=request.learning_source,
     )
     return ConversationResponse.model_validate(conversation)
 
@@ -72,6 +76,26 @@ async def get_conversation(
     try:
         conversation = await ConversationService(session).get(
             conversation_id, current_user.id
+        )
+    except ConversationNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conversation not found",
+        ) from exc
+
+    return ConversationResponse.model_validate(conversation)
+
+
+@router.patch("/{conversation_id}", response_model=ConversationResponse)
+async def update_conversation_title(
+    conversation_id: UUID,
+    request: ConversationUpdateTitleRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> ConversationResponse:
+    try:
+        conversation = await ConversationService(session).update_title(
+            conversation_id, current_user.id, request.title
         )
     except ConversationNotFoundError as exc:
         raise HTTPException(

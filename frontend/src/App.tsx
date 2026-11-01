@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createApi, errorMessage } from "./api";
 import { AuthForm } from "./AuthForm";
+import { AppShell } from "./AppShell";
+import type { WorkspaceView } from "./AppShell";
+import { PypiRankings } from "./PypiRankings";
 import { clearSession, readSession, writeSession } from "./session";
-import type { User } from "./types";
+import type { RankingComparison, User } from "./types";
 import { Workspace } from "./Workspace";
 
 export default function App() {
@@ -12,6 +15,10 @@ export default function App() {
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
+  const [authVisible, setAuthVisible] = useState(false);
+  const [destination, setDestination] = useState<WorkspaceView>("rankings");
+  const [comparison, setComparison] = useState<RankingComparison | null>(null);
+  const clearComparison = useCallback(() => setComparison(null), []);
 
   const logout = useCallback((message = "") => {
     currentToken.current = "";
@@ -20,6 +27,9 @@ export default function App() {
     setUser(null);
     setError("");
     setNotice(message);
+    setAuthVisible(Boolean(message));
+    setComparison(null);
+    setDestination("rankings");
   }, []);
 
   const api = useMemo(
@@ -48,17 +58,23 @@ export default function App() {
 
   if (!token)
     return (
-      <AuthForm
-        notice={notice}
-        onLogin={(value) => {
-          currentToken.current = value;
-          writeSession("token", value);
-          setUser(null);
-          setNotice("");
-          setError("");
-          setToken(value);
-        }}
-      />
+      <AppShell view={authVisible ? "login" : "rankings"} onNavigate={(view) => {
+        if (view !== "login") { setDestination(view); setComparison(null); }
+        setAuthVisible(view !== "rankings");
+      }}>
+        <div hidden={authVisible}><PypiRankings onCompare={(selection) => { setComparison(selection); setDestination("rankings"); setAuthVisible(true); }} /></div>
+        {authVisible ? <div className="login-page"><button className="text-button" onClick={() => { setAuthVisible(false); setComparison(null); setDestination("rankings"); }}>← 返回公开榜单</button><AuthForm
+          notice={notice || (comparison ? `登录后将准备 ${comparison.projects.join("、")} 的比较问题，点击发送后才会调用模型。` : "")}
+          onLogin={(value) => {
+            currentToken.current = value;
+            writeSession("token", value);
+            setUser(null);
+            setNotice("");
+            setError("");
+            setToken(value);
+          }}
+        /></div> : null}
+      </AppShell>
     );
 
   if (!user)
@@ -78,12 +94,12 @@ export default function App() {
           <p role="status">正在恢复登录…</p>
         )}
         <button className="secondary" onClick={() => logout()}>
-          返回登录
+          返回公开榜单
         </button>
       </main>
     );
 
   return (
-    <Workspace key={token} api={api} user={user} onLogout={() => logout()} />
+    <Workspace key={token} api={api} user={user} onLogout={() => logout()} initialView={destination} initialComparison={comparison} onComparisonConsumed={clearComparison} />
   );
 }

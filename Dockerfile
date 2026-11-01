@@ -27,6 +27,7 @@ COPY --from=python-build /app/.venv /app/.venv
 COPY --from=frontend /frontend/dist /app/frontend/dist
 COPY alembic.ini ./
 COPY alembic/ ./alembic/
+COPY scripts/refresh_pypi_rankings.py ./scripts/refresh_pypi_rankings.py
 USER app
 EXPOSE 8000
 CMD ["sh", "-c", "exec python -m uvicorn ai_workspace.production:create_app --factory --host 0.0.0.0 --port \"${PORT:-8000}\" --timeout-graceful-shutdown 70"]

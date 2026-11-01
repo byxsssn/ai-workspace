@@ -3,6 +3,7 @@ from ai_workspace.schemas.chat import ChatRequest, ChatResponse
 from ai_workspace.schemas.conversation import (
     ConversationCreateRequest,
     ConversationResponse,
+    ConversationUpdateTitleRequest,
 )
 from ai_workspace.schemas.message import MessageResponse
 from ai_workspace.schemas.provider_credential import (
@@ -16,6 +17,7 @@ __all__ = [
     "ChatResponse",
     "ConversationCreateRequest",
     "ConversationResponse",
+    "ConversationUpdateTitleRequest",
     "MessageResponse",
     "OpenRouterCredentialRequest",
     "ProviderCredentialResponse",

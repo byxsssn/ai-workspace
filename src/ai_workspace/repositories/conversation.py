@@ -1,3 +1,4 @@
+from typing import Literal
 from uuid import UUID
 
 from sqlalchemy import select
@@ -16,8 +17,16 @@ class ConversationRepository:
         self,
         user_id: UUID,
         title: str = "New conversation",
+        *,
+        learning_topic: Literal["fastapi"] | None = None,
+        learning_source: Literal["demo", "notion"] | None = None,
     ) -> Conversation:
-        conversation = Conversation(user_id=user_id, title=title)
+        conversation = Conversation(
+            user_id=user_id,
+            title=title,
+            learning_topic=learning_topic,
+            learning_source=learning_source,
+        )
         self.session.add(conversation)
         await self.session.flush()
         return conversation
@@ -46,3 +55,16 @@ class ConversationRepository:
             )
         )
         return list(result.scalars().all())
+
+    async def update_title(
+        self,
+        conversation_id: UUID,
+        user_id: UUID,
+        title: str,
+    ) -> Conversation | None:
+        conversation = await self.get_by_id_for_user(conversation_id, user_id)
+        if conversation:
+            conversation.title = title
+            await self.session.flush()
+            await self.session.refresh(conversation)
+        return conversation

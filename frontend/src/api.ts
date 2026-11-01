@@ -2,7 +2,12 @@ import type {
   ChatResponse,
   Conversation,
   Credential,
+  LearningContext,
+  LearningRecordDetail,
+  LearningRecordList,
+  LearningSource,
   Message,
+  PypiRanking,
   TokenResponse,
   User,
 } from "./types";
@@ -11,6 +16,7 @@ export class ApiError extends Error {
   constructor(
     public readonly status: number,
     message: string,
+    public readonly code?: string,
   ) {
     super(message);
     this.name = "ApiError";
@@ -27,6 +33,33 @@ const safeDetails: Record<string, string> = {
   "Conversation not found": "会话不存在或无权访问，请重新选择会话。",
   "Chat provider request failed":
     "模型服务请求失败，请检查 API 密钥、额度和模型名称。",
+};
+
+const safeCodes: Record<string, string> = {
+  rankings_unavailable: "暂时无法取得排行榜数据，请稍后重试。",
+  notion_not_configured: "尚未配置 Notion 连接。配置后可读取自己的学习记录，也可以先选择演示数据。",
+  notion_catalog_not_configured: "尚未配置 Notion 学习数据库。请先完成学习地图的数据源配置。",
+  notion_not_available: "当前账号无权读取这份 Notion 学习记录，请联系连接所有者确认。",
+  learning_record_not_found: "这条学习记录不存在、已归档或无权访问，请刷新地图后重试。",
+  source_unauthorized: "Notion 连接凭据已失效，请更新连接配置。应用登录仍然有效。",
+  source_forbidden: "无法读取来源，请确认 Notion 页面已共享给应用连接。",
+  source_not_found: "来源页面不存在或尚未共享给应用连接。",
+  source_rate_limited: "来源服务请求过于频繁，请稍后重试。",
+  source_timeout: "读取资料超时，请稍后重试。",
+  source_unavailable: "资料来源暂时不可用，请稍后重试。",
+  source_redirect: "资料来源地址发生跳转，需要先核对配置。",
+  source_too_large: "资料超过本次读取限额，请查看原文。",
+  invalid_source_response: "未能可靠读取资料，请稍后重试或检查来源。",
+  source_schema_mismatch: "学习记录的字段与预期不一致，请检查 Notion 字段配置。",
+  learning_agent_failed: "学习助手请求失败，请检查模型支持情况、密钥和额度。",
+  learning_agent_timeout: "学习助手处理超时，请先刷新历史再决定是否重发。",
+  learning_agent_limit: "本轮已达到调用上限，请缩小问题范围后重试。",
+  learning_invalid_citation: "本轮回答的来源未通过校验，请重试或查看官方原文。",
+  learning_sources_required: "本轮没有取得足够资料，暂时无法给出有依据的讲解。",
+  learning_invalid_answer: "学习助手未返回有效回答，请重试。",
+  learning_conversation_changed: "会话历史已变化，本轮回答未保存。请先刷新历史再决定是否重发。",
+  conversation_changed: "会话历史已变化，本轮回答未保存。请先刷新历史再决定是否重发。",
+  conversation_context_conflict: "会话的学习上下文与请求不一致，请返回地图重新选择会话。",
 };
 
 export function errorMessage(error: unknown): string {
@@ -63,30 +96,36 @@ export function createApi(
     }
 
     if (!response.ok) {
-      if (
-        token &&
-        (response.status === 401 || response.status === 403) &&
-        !signal?.aborted
-      ) {
-        onUnauthorized?.();
-      }
       const payload: unknown = await response.json().catch(() => null);
       const detail =
         payload && typeof payload === "object" && "detail" in payload
           ? payload.detail
           : null;
+      const code = detail && typeof detail === "object" && "code" in detail &&
+        typeof detail.code === "string" ? detail.code : undefined;
+      const knownSourceError = code !== undefined && Object.hasOwn(safeCodes, code);
+      if (
+        token &&
+        (response.status === 401 || response.status === 403) &&
+        !knownSourceError &&
+        !signal?.aborted
+      ) {
+        onUnauthorized?.();
+      }
       const message =
-        typeof detail === "string" ? safeDetails[detail] : undefined;
+        knownSourceError ? safeCodes[code] : typeof detail === "string" && Object.hasOwn(safeDetails, detail) ? safeDetails[detail] : undefined;
       const fallback: Record<number, string> = {
         401: token ? "登录已过期，请重新登录。" : "邮箱或密码错误。",
         403: "没有访问权限。",
         404: "请求的内容不存在。",
+        409: "会话已发生变化，请先刷新历史再重试。",
         422: "输入不符合要求，请检查填写内容。",
         429: "请求过于频繁，请稍后重试。",
       };
       throw new ApiError(
         response.status,
         message ?? fallback[response.status] ?? "服务暂时不可用，请稍后重试。",
+        knownSourceError ? code : undefined,
       );
     }
     if (response.status === 204) return undefined as T;
@@ -98,6 +137,8 @@ export function createApi(
   }
 
   return {
+    pypiRankings: (signal?: AbortSignal) =>
+      request<PypiRanking>("/rankings/pypi", "GET", undefined, signal),
     register: (email: string, password: string, inviteCode?: string) =>
       request<User>("/users/register", "POST", {
         email,
@@ -121,8 +162,14 @@ export function createApi(
       request<void>("/providers/openrouter", "DELETE", undefined, signal),
     conversations: (signal?: AbortSignal) =>
       request<Conversation[]>("/conversations", "GET", undefined, signal),
-    createConversation: (title: string, signal?: AbortSignal) =>
-      request<Conversation>("/conversations", "POST", { title }, signal),
+    createConversation: (title: string, signal?: AbortSignal, learning?: LearningContext) =>
+      request<Conversation>("/conversations", "POST", { title, ...learning }, signal),
+    learningRecords: (source: LearningSource = "notion", signal?: AbortSignal) =>
+      request<LearningRecordList>(`/learning/records?source=${source}`, "GET", undefined, signal),
+    learningRecord: (id: string, source: LearningSource, signal?: AbortSignal) =>
+      request<LearningRecordDetail>(
+        `/learning/records/${encodeURIComponent(id)}?source=${source}`, "GET", undefined, signal,
+      ),
     messages: (id: string, signal?: AbortSignal) =>
       request<Message[]>(
         `/conversations/${encodeURIComponent(id)}/messages`,

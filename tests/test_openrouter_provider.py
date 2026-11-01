@@ -3,542 +3,643 @@ import json
 import logging
 import traceback
 
-import httpx2
+import httpx
 import pytest
-from openai import DefaultAsyncHttpxClient
+from langchain_core.callbacks import BaseCallbackHandler
+from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.tools import tool
+from langsmith.run_helpers import get_tracing_context
 
-from ai_workspace.providers import (
-    ModelMessage,
-    ModelResponse,
-    ProviderError,
-    ProviderId,
-    ReasoningEffort,
-    TokenUsage,
-    openrouter,
-)
-from ai_workspace.providers.openrouter import OpenRouterProvider
+from ai_workspace.providers.errors import ProviderError
+from ai_workspace.providers.openrouter import open_chat_model
 
-API_KEY = "sk-or-test-secret-must-not-appear"
-UPSTREAM_DETAIL = "private-upstream-error-details"
-ENDPOINT = "https://openrouter.ai/api/v1/responses"
+API_KEY = "sk-or-fabricated-learning-key"
+MODEL = "example/fabricated-model"
+ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 
 
-def response_payload(content: str = "Hello") -> dict[str, object]:
+def completion(*, content: str = "Use AsyncClient.", tool_calls=None) -> dict:
+    message = {"role": "assistant", "content": content}
+    if tool_calls is not None:
+        message["tool_calls"] = tool_calls
     return {
-        "id": API_KEY,
-        "object": "response",
-        "model": "returned-model",
-        "status": "completed",
-        "error": None,
-        "incomplete_details": None,
-        "output": [
+        "id": "gen-fabricated",
+        "object": "chat.completion",
+        "created": 1_700_000_000,
+        "model": MODEL,
+        "system_fingerprint": None,
+        "choices": [
             {
-                "id": "message-1",
-                "type": "message",
-                "role": "assistant",
-                "status": "completed",
-                "content": [
-                    {"type": "output_text", "text": content, "annotations": []}
-                ],
+                "index": 0,
+                "finish_reason": "tool_calls" if tool_calls else "stop",
+                "message": message,
+                "logprobs": None,
             }
         ],
-    }
-
-
-def assert_safe_error(error: ProviderError, caplog: pytest.LogCaptureFixture) -> None:
-    for sensitive_value in (API_KEY, UPSTREAM_DETAIL):
-        assert sensitive_value not in str(error)
-        assert sensitive_value not in repr(error)
-        assert sensitive_value not in "".join(traceback.format_exception(error))
-        assert sensitive_value not in caplog.text
-    assert error.__cause__ is None
-
-
-def complete(
-    transport: httpx2.MockTransport,
-    *,
-    api_key: str = API_KEY,
-    messages: list[ModelMessage] | None = None,
-    reasoning_effort: ReasoningEffort | None = None,
-) -> ModelResponse:
-    clients: list[httpx2.AsyncClient] = []
-
-    def create_http_client(**kwargs: object) -> httpx2.AsyncClient:
-        client = DefaultAsyncHttpxClient(transport=transport, **kwargs)
-        clients.append(client)
-        return client
-
-    async def run() -> ModelResponse:
-        with pytest.MonkeyPatch.context() as patch:
-            patch.setattr(openrouter, "DefaultAsyncHttpxClient", create_http_client)
-            try:
-                return await OpenRouterProvider().generate(
-                    api_key=api_key,
-                    model="requested-model",
-                    messages=messages or [ModelMessage(role="user", content="Hi")],
-                    reasoning_effort=reasoning_effort,
-                )
-            finally:
-                for client in clients:
-                    assert client.is_closed
-                    assert "Authorization" not in client.headers
-
-    return asyncio.run(run())
-
-
-def test_generate_sends_fixed_request_and_maps_response(
-    caplog: pytest.LogCaptureFixture,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    caplog.set_level(logging.DEBUG)
-    monkeypatch.setenv("OPENAI_API_KEY", "untrusted-environment-key")
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://untrusted.example.test/")
-    monkeypatch.setenv(
-        "OPENAI_CUSTOM_HEADERS", "authorization: Bearer untrusted-environment-key"
-    )
-    requests: list[httpx2.Request] = []
-    payload = response_payload()
-    payload["usage"] = {
-        "input_tokens": 12,
-        "output_tokens": 3,
-        "total_tokens": 15,
-        "cost": 0.001,
-    }
-
-    def handle(request: httpx2.Request) -> httpx2.Response:
-        requests.append(request)
-        return httpx2.Response(200, json=payload)
-
-    messages = [
-        ModelMessage(role="system", content="Answer helpfully"),
-        ModelMessage(role="user", content="Earlier question"),
-        ModelMessage(role="assistant", content="Earlier answer"),
-        ModelMessage(role="user", content="Hi"),
-    ]
-    result = complete(httpx2.MockTransport(handle), messages=messages)
-
-    assert isinstance(result, ModelResponse)
-    assert OpenRouterProvider().provider_id is ProviderId.OPENROUTER
-    assert result.content == "Hello"
-    assert result.model == "returned-model"
-    assert result.usage == TokenUsage(
-        prompt_tokens=12, completion_tokens=3, total_tokens=15
-    )
-    assert len(requests) == 1
-    request = requests[0]
-    assert request.method == "POST"
-    assert str(request.url) == ENDPOINT
-    assert request.headers["Authorization"] == f"Bearer {API_KEY}"
-    assert request.extensions["timeout"] == {
-        "connect": 60.0,
-        "read": 60.0,
-        "write": 60.0,
-        "pool": 60.0,
-    }
-    assert json.loads(request.content) == {
-        "model": "requested-model",
-        "input": [
-            {
-                "type": "message",
-                "role": "system",
-                "content": [{"type": "input_text", "text": "Answer helpfully"}],
-            },
-            {
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": "Earlier question"}],
-            },
-            {
-                "type": "message",
-                "role": "assistant",
-                "id": "msg_2",
-                "status": "completed",
-                "content": [
-                    {
-                        "type": "output_text",
-                        "text": "Earlier answer",
-                        "annotations": [],
-                    }
-                ],
-            },
-            {
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": "Hi"}],
-            },
-        ],
-        "store": False,
-        "stream": False,
-    }
-    assert API_KEY not in repr(result)
-    assert API_KEY not in caplog.text
-
-
-@pytest.mark.parametrize(
-    "reasoning_effort",
-    [None, "none", "minimal", "low", "medium", "high", "xhigh", "max"],
-)
-def test_generate_maps_selected_reasoning_effort_to_responses_request(
-    reasoning_effort: ReasoningEffort | None,
-) -> None:
-    requests: list[httpx2.Request] = []
-
-    def handle(request: httpx2.Request) -> httpx2.Response:
-        requests.append(request)
-        return httpx2.Response(200, json=response_payload())
-
-    complete(httpx2.MockTransport(handle), reasoning_effort=reasoning_effort)
-
-    assert len(requests) == 1
-    assert str(requests[0].url) == ENDPOINT
-    payload = json.loads(requests[0].content)
-    assert "reasoning_effort" not in payload
-    if reasoning_effort is None:
-        assert "reasoning" not in payload
-    else:
-        assert payload["reasoning"] == {"effort": reasoning_effort}
-
-
-@pytest.mark.parametrize("usage", [None, {}, {"output_tokens": 0}])
-def test_generate_preserves_optional_usage(usage: dict[str, int] | None) -> None:
-    payload = response_payload()
-    if usage is not None:
-        payload["usage"] = usage
-
-    result = complete(
-        httpx2.MockTransport(lambda _: httpx2.Response(200, json=payload))
-    )
-
-    if usage is None:
-        assert result.usage is None
-    else:
-        assert result.usage == TokenUsage(completion_tokens=usage.get("output_tokens"))
-
-
-@pytest.mark.parametrize(
-    "usage",
-    [
-        "invalid",
-        [],
-        12,
-        {"input_tokens": API_KEY},
-        {"input_tokens": -1},
-        {"input_tokens": 1.5},
-        {"input_tokens": []},
-        {"input_tokens": {}},
-        {"input_tokens": 12, "output_tokens": -1, "total_tokens": 11},
-    ],
-)
-def test_invalid_usage_does_not_discard_a_valid_answer(usage: object) -> None:
-    payload = {**response_payload(), "usage": usage}
-
-    result = complete(
-        httpx2.MockTransport(lambda _: httpx2.Response(200, json=payload))
-    )
-
-    assert result.content == "Hello"
-    assert result.usage is None
-    assert API_KEY not in repr(result)
-
-
-@pytest.mark.parametrize("input_tokens, expected", [("12", 12), (True, 1)])
-def test_usage_accepts_sdk_normalization(input_tokens: object, expected: int) -> None:
-    # 完整用量对象由 SDK 的类型模型规范化；
-    # 适配器直接校验该结果，不重新读取原始 JSON。
-    payload = {
-        **response_payload(),
         "usage": {
-            "input_tokens": input_tokens,
-            "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
-            "output_tokens": 3,
-            "output_tokens_details": {"reasoning_tokens": 0},
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
             "total_tokens": 15,
         },
     }
 
-    result = complete(
-        httpx2.MockTransport(lambda _: httpx2.Response(200, json=payload))
-    )
 
-    assert result.usage == TokenUsage(
-        prompt_tokens=expected, completion_tokens=3, total_tokens=15
-    )
+class ClosingTransport(httpx.MockTransport):
+    closed = False
 
-
-def test_generate_aggregates_text_blocks_and_preserves_whitespace() -> None:
-    content = "  Hello\n\nworld!  "
-    payload = {
-        **response_payload(),
-        "output": [
-            {
-                "id": f"message-{index}",
-                "type": "message",
-                "role": "assistant",
-                "status": "completed",
-                "content": [
-                    {"type": "output_text", "text": text, "annotations": []}
-                    for text in texts
-                ],
-            }
-            for index, texts in enumerate([["  Hello", "\n\n"], ["world!  "]])
-        ],
-    }
-
-    result = complete(
-        httpx2.MockTransport(lambda _: httpx2.Response(200, json=payload))
-    )
-
-    assert result.content == content
+    async def aclose(self) -> None:
+        self.closed = True
+        await super().aclose()
 
 
-@pytest.mark.parametrize("status_code", [401, 408, 429, 500, 503, 307])
-def test_http_failures_are_safe_without_retries_or_redirects(
-    status_code: int, caplog: pytest.LogCaptureFixture
-) -> None:
-    caplog.set_level(logging.DEBUG)
-    requests: list[httpx2.Request] = []
+def test_actual_chat_request_ignores_environment_and_closes_clients(monkeypatch):
+    for name, value in {
+        "OPENROUTER_API_KEY": "sk-or-wrong-global-key",
+        "OPENROUTER_API_BASE": "https://wrong.example",
+        "OPENROUTER_SESSION_ID": "wrong-global-session",
+        "OPENROUTER_HTTP_REFERER": "https://wrong.example",
+        "OPENROUTER_X_OPEN_ROUTER_TITLE": "wrong-global-title",
+        "OPENROUTER_X_OPEN_ROUTER_CATEGORIES": "wrong-global-category",
+        "HTTP_PROXY": "http://wrong.example:1234",
+        "HTTPS_PROXY": "http://wrong.example:1234",
+        "LANGSMITH_TRACING": "true",
+    }.items():
+        monkeypatch.setenv(name, value)
+    requests = []
 
-    def handle(request: httpx2.Request) -> httpx2.Response:
+    def respond(request):
         requests.append(request)
-        return httpx2.Response(
-            status_code,
-            json={"error": {"message": f"{UPSTREAM_DETAIL}: {API_KEY}"}},
-            headers={"Location": "https://untrusted.example.test/"},
+        return httpx.Response(200, json=completion())
+
+    transport = ClosingTransport(respond)
+
+    async def run():
+        async with open_chat_model(
+            api_key=API_KEY, model=MODEL, transport=transport
+        ) as model:
+            config = model.client.sdk_configuration
+            sync_client, async_client = config.client, config.async_client
+            assert config.retry_config is None
+            assert not sync_client.is_closed and not async_client.is_closed
+            assert get_tracing_context()["enabled"] is False
+            assert model.cache is False
+            assert API_KEY not in repr(model)
+            assert API_KEY not in model.model_dump_json()
+            first = await model.ainvoke([HumanMessage(content="How do I test async?")])
+            second = await model.ainvoke("How do I test async?")
+            assert first.content == second.content == "Use AsyncClient."
+            assert first.usage_metadata["total_tokens"] == 15
+        assert sync_client.is_closed and async_client.is_closed
+
+    asyncio.run(run())
+    assert transport.closed
+    assert len(requests) == 2  # No global cache reuse.
+    for request in requests:
+        assert str(request.url) == ENDPOINT
+        assert request.method == "POST"
+        assert request.headers["authorization"] == f"Bearer {API_KEY}"
+        assert "wrong-global" not in str(request.headers)
+        payload = json.loads(request.content)
+        assert payload["model"] == MODEL
+        assert "max_tokens" not in payload
+        assert "reasoning" not in payload
+        assert payload["stream"] is False
+        assert "session_id" not in payload
+        assert request.extensions["timeout"] == dict.fromkeys(
+            ("connect", "read", "write", "pool"), 60.0
         )
 
-    with pytest.raises(ProviderError) as exc_info:
-        complete(httpx2.MockTransport(handle))
 
-    assert exc_info.value.status_code == status_code
-    assert str(exc_info.value) == f"OpenRouter returned HTTP {status_code}"
-    assert len(requests) == 1
-    assert str(requests[0].url) == ENDPOINT
-    assert_safe_error(exc_info.value, caplog)
+def test_tool_call_and_tool_result_round_trip():
+    requests = []
+
+    @tool
+    def read_official_doc(section_id: str) -> str:
+        """Read one approved official documentation section."""
+        return "AsyncClient is asynchronous."
+
+    def respond(request):
+        requests.append(json.loads(request.content))
+        if len(requests) == 1:
+            return httpx.Response(
+                200,
+                json=completion(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "call-fabricated",
+                            "type": "function",
+                            "function": {
+                                "name": "read_official_doc",
+                                "arguments": '{"section_id":"async-tests"}',
+                            },
+                        }
+                    ],
+                ),
+            )
+        return httpx.Response(200, json=completion())
+
+    async def run():
+        async with open_chat_model(
+            api_key=API_KEY, model=MODEL, transport=httpx.MockTransport(respond)
+        ) as model:
+            bound = model.bind_tools([read_official_doc])
+            human = HumanMessage(content="Explain async tests.")
+            answer = await bound.ainvoke([human])
+            assert answer.tool_calls == [
+                {
+                    "name": "read_official_doc",
+                    "args": {"section_id": "async-tests"},
+                    "id": "call-fabricated",
+                    "type": "tool_call",
+                }
+            ]
+            final = await bound.ainvoke(
+                [
+                    human,
+                    answer,
+                    ToolMessage(
+                        content="AsyncClient is asynchronous.",
+                        tool_call_id="call-fabricated",
+                    ),
+                ]
+            )
+            assert final.content == "Use AsyncClient."
+
+    asyncio.run(run())
+    assert requests[0]["tools"][0]["function"]["name"] == "read_official_doc"
+    assert requests[1]["messages"][-1] == {
+        "role": "tool",
+        "content": "AsyncClient is asynchronous.",
+        "tool_call_id": "call-fabricated",
+    }
 
 
-@pytest.mark.parametrize("error_type", [httpx2.ReadTimeout, httpx2.ConnectError])
-def test_transport_failures_are_wrapped_without_sensitive_details(
-    error_type: type[httpx2.RequestError], caplog: pytest.LogCaptureFixture
-) -> None:
+@pytest.mark.parametrize("status", [301, 307, 401, 403, 429, 500, 503])
+def test_failures_do_not_retry_redirect_or_expose_upstream_data(
+    status, monkeypatch, caplog
+):
+    monkeypatch.setenv("OPENROUTER_DEBUG", "true")
     caplog.set_level(logging.DEBUG)
-    requests: list[httpx2.Request] = []
+    requests = []
+    callback_errors = []
+    private_detail = "private-upstream-failure"
 
-    def handle(request: httpx2.Request) -> httpx2.Response:
+    class ErrorRecorder(BaseCallbackHandler):
+        def on_llm_error(self, error, **kwargs):
+            callback_errors.append(error)
+
+    def respond(request):
         requests.append(request)
-        raise error_type(f"{UPSTREAM_DETAIL}: {API_KEY}", request=request)
+        return httpx.Response(
+            status,
+            headers={"location": "https://wrong.example", "x-request-id": API_KEY},
+            json={"error": {"message": private_detail + API_KEY, "code": status}},
+        )
 
-    with pytest.raises(ProviderError) as exc_info:
-        complete(httpx2.MockTransport(handle))
+    transport = ClosingTransport(respond)
 
-    assert exc_info.value.status_code is None
-    assert str(exc_info.value) == "OpenRouter request failed"
+    async def run():
+        with pytest.raises(ProviderError) as caught:
+            async with open_chat_model(
+                api_key=API_KEY, model=MODEL, transport=transport
+            ) as model:
+                await model.ainvoke("Hello", config={"callbacks": [ErrorRecorder()]})
+        assert API_KEY not in str(caught.value)
+        assert private_detail not in "".join(traceback.format_exception(caught.value))
+        assert caught.value.status_code == status
+
+    asyncio.run(run())
     assert len(requests) == 1
-    assert_safe_error(exc_info.value, caplog)
+    assert transport.closed
+    assert len(callback_errors) == 1
+    assert isinstance(callback_errors[0], ProviderError)
+    assert API_KEY not in repr(callback_errors)
+    assert API_KEY not in caplog.text
+    assert private_detail not in caplog.text
 
 
 @pytest.mark.parametrize(
-    "payload",
-    [
-        f"not JSON: {API_KEY}",
-        [],
-        None,
-        {},
-        {"error": {"message": API_KEY}},
-        {**response_payload(), "output": []},
-        {**response_payload(), "output": None},
-        {**response_payload(), "output": [None]},
-        {**response_payload(), "output": [{}]},
-        {**response_payload(), "output": [{"type": "message", "content": None}]},
-        {
-            **response_payload(),
-            "output": [
-                {
-                    "type": "message",
-                    "content": [{"type": "output_text", "text": []}],
-                }
-            ],
-        },
-        {
-            **response_payload(),
-            "output": [
-                {
-                    "type": "message",
-                    "content": [{"type": "refusal", "refusal": API_KEY}],
-                }
-            ],
-        },
-        response_payload(""),
-        {**response_payload(), "model": None},
-        {**response_payload(), "model": ""},
-        {**response_payload(), "model": []},
-        {**response_payload(), "model": API_KEY},
-        {**response_payload(), "status": "failed", "error": {"message": API_KEY}},
-        {**response_payload(), "status": "incomplete"},
-        {**response_payload(), "status": "in_progress"},
-        {**response_payload(), "status": None},
-        {**response_payload(), "error": {"message": API_KEY}},
-        {
-            **response_payload(),
-            "incomplete_details": {"reason": "max_output_tokens"},
-        },
-        response_payload(f"Reflected key: {API_KEY}"),
-    ],
+    "failure", ["timeout", "connection", "invalid_json", "invalid_schema"]
 )
-def test_invalid_upstream_responses_raise_safe_provider_errors(
-    payload: object, caplog: pytest.LogCaptureFixture
-) -> None:
-    caplog.set_level(logging.DEBUG)
+def test_transport_and_response_failures_are_safe_and_close(failure):
+    requests = []
 
-    def handle(_: httpx2.Request) -> httpx2.Response:
-        if isinstance(payload, str):
-            return httpx2.Response(200, content=payload)
-        # 显式构造 JSON，以覆盖 null 和不符合 SDK 结构的字段。
-        return httpx2.Response(
-            200,
-            content=json.dumps(payload),
-            headers={"Content-Type": "application/json"},
-        )
-
-    with pytest.raises(ProviderError) as exc_info:
-        complete(httpx2.MockTransport(handle))
-
-    assert exc_info.value.status_code is None
-    assert str(exc_info.value) == "OpenRouter returned an invalid response"
-    assert_safe_error(exc_info.value, caplog)
-
-
-def test_malformed_json_body_raises_safe_provider_error(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    with pytest.raises(ProviderError) as exc_info:
-        complete(
-            httpx2.MockTransport(
-                lambda _: httpx2.Response(
-                    200,
-                    content=f'{{"private": "{API_KEY}"',
-                    headers={"Content-Type": "application/json"},
-                )
+    def respond(request):
+        requests.append(request)
+        if failure == "timeout":
+            raise httpx.ReadTimeout(API_KEY, request=request)
+        if failure == "connection":
+            raise httpx.ConnectError(API_KEY, request=request)
+        if failure == "invalid_json":
+            return httpx.Response(
+                200, text=API_KEY, headers={"content-type": "application/json"}
             )
-        )
+        return httpx.Response(200, json={"unexpected": API_KEY})
 
-    assert str(exc_info.value) == "OpenRouter returned an invalid response"
-    assert_safe_error(exc_info.value, caplog)
+    transport = ClosingTransport(respond)
 
-
-@pytest.mark.parametrize("api_key", ["", f"{API_KEY}\r\n", f"{API_KEY} 空格"])
-def test_invalid_api_key_is_rejected_before_client_creation(
-    api_key: str,
-    caplog: pytest.LogCaptureFixture,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def unexpected_client(**_: object) -> None:
-        pytest.fail("Invalid API key must not create an SDK client")
-
-    monkeypatch.setattr(openrouter, "AsyncOpenAI", unexpected_client)
-
-    with pytest.raises(ProviderError) as exc_info:
-        asyncio.run(
-            OpenRouterProvider().generate(
-                api_key=api_key,
-                model="requested-model",
-                messages=[ModelMessage(role="user", content="Hi")],
-            )
-        )
-
-    assert exc_info.value.status_code is None
-    assert_safe_error(exc_info.value, caplog)
-
-
-def test_concurrent_requests_keep_credentials_isolated(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    clients: list[httpx2.AsyncClient] = []
-    requests: list[httpx2.Request] = []
-
-    async def run() -> None:
-        both_started = asyncio.Event()
-
-        async def handle(request: httpx2.Request) -> httpx2.Response:
-            requests.append(request)
-            if len(requests) == 2:
-                both_started.set()
-            await asyncio.wait_for(both_started.wait(), timeout=5)
-            payload = response_payload()
-            payload["model"] = json.loads(request.content)["model"]
-            return httpx2.Response(200, json=payload)
-
-        def create_http_client(**kwargs: object) -> httpx2.AsyncClient:
-            client = DefaultAsyncHttpxClient(
-                transport=httpx2.MockTransport(handle), **kwargs
-            )
-            clients.append(client)
-            return client
-
-        monkeypatch.setattr(openrouter, "DefaultAsyncHttpxClient", create_http_client)
-        provider = OpenRouterProvider()
-        results = await asyncio.gather(
-            *(
-                provider.generate(
-                    api_key=f"{API_KEY}-{index}",
-                    model=f"requested-model-{index}",
-                    messages=[ModelMessage(role="user", content="Hi")],
-                )
-                for index in range(2)
-            )
-        )
-        assert [result.model for result in results] == [
-            "requested-model-0",
-            "requested-model-1",
-        ]
+    async def run():
+        with pytest.raises(ProviderError) as caught:
+            async with open_chat_model(
+                api_key=API_KEY, model=MODEL, transport=transport
+            ) as model:
+                await model.ainvoke("Hello")
+        assert API_KEY not in "".join(traceback.format_exception(caught.value))
 
     asyncio.run(run())
-
-    assert len(clients) == len(requests) == 2
-    for client in clients:
-        assert client.is_closed
-        assert "Authorization" not in client.headers
-    for request in requests:
-        payload = json.loads(request.content)
-        index = payload["model"].rsplit("-", 1)[1]
-        assert "reasoning" not in payload
-        assert request.headers["Authorization"] == f"Bearer {API_KEY}-{index}"
-        assert str(request.url) == ENDPOINT
+    assert len(requests) == 1
+    assert transport.closed
 
 
-def test_cancellation_propagates_and_closes_request_client(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    clients: list[httpx2.AsyncClient] = []
+@pytest.mark.parametrize("location", ["content", "metadata", "tool_arguments"])
+def test_upstream_credential_echo_never_reaches_callbacks(location):
+    payload = completion(content=API_KEY if location == "content" else "Answer")
+    if location == "metadata":
+        payload["model"] = API_KEY
+    if location == "tool_arguments":
+        payload["choices"][0]["message"]["tool_calls"] = [
+            {
+                "id": "call-fabricated",
+                "type": "function",
+                "function": {
+                    "name": "read_official_doc",
+                    "arguments": json.dumps({"section_id": API_KEY}),
+                },
+            }
+        ]
+    completed = []
 
-    async def run() -> None:
+    class ResultRecorder(BaseCallbackHandler):
+        def on_llm_end(self, response, **kwargs):
+            completed.append(response)
+
+    async def run():
+        with pytest.raises(ProviderError, match="invalid response"):
+            async with open_chat_model(
+                api_key=API_KEY,
+                model=MODEL,
+                transport=httpx.MockTransport(
+                    lambda request: httpx.Response(200, json=payload)
+                ),
+            ) as model:
+                await model.ainvoke("Hello", config={"callbacks": [ResultRecorder()]})
+
+    asyncio.run(run())
+    assert completed == []
+
+
+def test_concurrent_requests_keep_distinct_credentials_and_clients():
+    requests = []
+    clients = []
+    arrived = 0
+
+    async def run():
+        both_started = asyncio.Event()
+
+        async def respond(request):
+            nonlocal arrived
+            requests.append(request)
+            arrived += 1
+            if arrived == 2:
+                both_started.set()
+            await asyncio.wait_for(both_started.wait(), timeout=2)
+            return httpx.Response(200, json=completion())
+
+        async def generate(key, question):
+            async with open_chat_model(
+                api_key=key, model=MODEL, transport=httpx.MockTransport(respond)
+            ) as model:
+                clients.append(model.client.sdk_configuration.async_client)
+                return await model.ainvoke(question)
+
+        await asyncio.gather(
+            generate("sk-or-fabricated-a", "Question A"),
+            generate("sk-or-fabricated-b", "Question B"),
+        )
+
+    asyncio.run(run())
+    assert clients[0] is not clients[1]
+    assert all(client.is_closed for client in clients)
+    assert {
+        (
+            request.headers["authorization"],
+            json.loads(request.content)["messages"][0]["content"],
+        )
+        for request in requests
+    } == {
+        ("Bearer sk-or-fabricated-a", "Question A"),
+        ("Bearer sk-or-fabricated-b", "Question B"),
+    }
+
+
+def test_cancellation_propagates_and_closes_clients():
+    transport = None
+
+    async def run():
+        nonlocal transport
         started = asyncio.Event()
 
-        async def handle(_: httpx2.Request) -> httpx2.Response:
+        async def respond(request):
             started.set()
             await asyncio.Event().wait()
-            pytest.fail("Cancelled request must not complete")
 
-        def create_http_client(**kwargs: object) -> httpx2.AsyncClient:
-            client = DefaultAsyncHttpxClient(
-                transport=httpx2.MockTransport(handle), **kwargs
-            )
-            clients.append(client)
-            return client
+        transport = ClosingTransport(respond)
 
-        monkeypatch.setattr(openrouter, "DefaultAsyncHttpxClient", create_http_client)
-        task = asyncio.create_task(
-            OpenRouterProvider().generate(
-                api_key=API_KEY,
-                model="requested-model",
-                messages=[ModelMessage(role="user", content="Hi")],
-            )
-        )
-        await asyncio.wait_for(started.wait(), timeout=5)
+        async def generate():
+            async with open_chat_model(
+                api_key=API_KEY, model=MODEL, transport=transport
+            ) as model:
+                await model.ainvoke("Hello")
+
+        task = asyncio.create_task(generate())
+        await asyncio.wait_for(started.wait(), timeout=2)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
 
     asyncio.run(run())
+    assert transport.closed
 
-    assert len(clients) == 1
-    assert clients[0].is_closed
+
+@pytest.mark.parametrize(
+    "key", ["", "key with spaces", "key\r\nInjected: header", "密钥"]
+)
+def test_invalid_credentials_never_reach_transport(key):
+    def respond(request):
+        pytest.fail("Invalid credentials must not make an HTTP request")
+
+    async def run():
+        with pytest.raises(ProviderError, match="Invalid OpenRouter API key"):
+            async with open_chat_model(
+                api_key=key, model=MODEL, transport=httpx.MockTransport(respond)
+            ):
+                pytest.fail("Invalid credentials must not yield a model")
+
+    asyncio.run(run())
+
+
+def test_sync_invocation_fails_without_network():
+    async def run():
+        async with open_chat_model(api_key=API_KEY, model=MODEL) as model:
+            with pytest.raises(ProviderError, match="asynchronous"):
+                model.invoke("Hello")
+
+    asyncio.run(run())
+
+
+def test_invocation_options_cannot_override_network_boundaries():
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, json=completion())
+
+    async def run():
+        async with open_chat_model(
+            api_key=API_KEY,
+            model=MODEL,
+            timeout_seconds=45,
+            max_tokens=2000,
+            transport=httpx.MockTransport(respond),
+        ) as model:
+            await model.bind(
+                server_url="https://wrong.example",
+                timeout_ms=600_000,
+                max_tokens=100_000,
+                stream=True,
+            ).ainvoke("Hello")
+
+    asyncio.run(run())
+    assert str(requests[0].url) == ENDPOINT
+    assert requests[0].extensions["timeout"]["read"] == 45.0
+    assert json.loads(requests[0].content)["max_tokens"] == 2_000
+    assert json.loads(requests[0].content)["stream"] is False
+
+
+@pytest.mark.parametrize("model_name", ["", "a" * 256, "model\r\n", API_KEY])
+def test_invalid_model_never_reaches_transport(model_name):
+    def respond(request):
+        pytest.fail("Invalid model must not make an HTTP request")
+
+    async def run():
+        with pytest.raises(ProviderError, match="Invalid OpenRouter model"):
+            async with open_chat_model(
+                api_key=API_KEY,
+                model=model_name,
+                transport=httpx.MockTransport(respond),
+            ):
+                pytest.fail("Invalid model must not yield a client")
+
+    asyncio.run(run())
+
+
+def test_caller_failure_propagates_closes_clients_and_restores_tracing():
+    async def run():
+        previous = get_tracing_context()["enabled"]
+        with pytest.raises(RuntimeError, match="caller failed"):
+            async with open_chat_model(
+                api_key=API_KEY,
+                model=MODEL,
+                transport=httpx.MockTransport(
+                    lambda request: pytest.fail("No request expected")
+                ),
+            ) as model:
+                config = model.client.sdk_configuration
+                clients = (config.client, config.async_client)
+                raise RuntimeError("caller failed")
+        assert all(client.is_closed for client in clients)
+        assert get_tracing_context()["enabled"] is previous
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "effort", [None, "none", "minimal", "low", "medium", "high", "xhigh", "max"]
+)
+def test_reasoning_options_are_sent_without_loss(effort):
+    requests = []
+
+    def respond(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json=completion())
+
+    async def run():
+        async with open_chat_model(
+            api_key=API_KEY,
+            model=MODEL,
+            reasoning_effort=effort,
+            transport=httpx.MockTransport(respond),
+        ) as model:
+            await model.bind(reasoning={"effort": "wrong"}).ainvoke("Hello")
+
+    asyncio.run(run())
+    if effort is None:
+        assert "reasoning" not in requests[0]
+    else:
+        assert requests[0]["reasoning"] == {"effort": effort}
+
+
+@pytest.mark.parametrize(
+    ("raw_usage", "expected"),
+    [
+        (None, None),
+        ({}, None),
+        (
+            {"prompt_tokens": 10},
+            {"prompt_tokens": 10, "completion_tokens": None, "total_tokens": None},
+        ),
+        (
+            {"completion_tokens": 5, "total_tokens": 15},
+            {"prompt_tokens": None, "completion_tokens": 5, "total_tokens": 15},
+        ),
+        (
+            {"prompt_tokens": "10", "completion_tokens": "5", "total_tokens": "15"},
+            {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        ),
+        ({"prompt_tokens": -1, "completion_tokens": 5, "total_tokens": 4}, None),
+        ({"prompt_tokens": 1.5}, None),
+        ({"prompt_tokens": "unknown"}, None),
+        ("invalid", None),
+    ],
+)
+def test_actual_model_and_optional_usage_are_preserved(raw_usage, expected):
+    payload = completion()
+    payload["model"] = "actual/returned-model"
+    payload["usage"] = raw_usage
+
+    async def run():
+        async with open_chat_model(
+            api_key=API_KEY,
+            model=MODEL,
+            transport=httpx.MockTransport(lambda _: httpx.Response(200, json=payload)),
+        ) as model:
+            answer = await model.ainvoke("Hello")
+        assert answer.content == "Use AsyncClient."
+        assert answer.response_metadata["model_name"] == "actual/returned-model"
+        assert answer.response_metadata["token_usage"] == expected
+        if expected is None or any(value is None for value in expected.values()):
+            assert answer.usage_metadata is None
+        else:
+            assert answer.usage_metadata["total_tokens"] == expected["total_tokens"]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "reason", ["length", "content_filter", "error", "unknown", None]
+)
+def test_non_complete_answers_are_rejected_even_with_text(reason):
+    payload = completion(content="An incomplete answer that must not be stored")
+    payload["choices"][0]["finish_reason"] = reason
+
+    async def run():
+        with pytest.raises(ProviderError):
+            async with open_chat_model(
+                api_key=API_KEY,
+                model=MODEL,
+                transport=httpx.MockTransport(
+                    lambda _: httpx.Response(200, json=payload)
+                ),
+            ) as model:
+                await model.ainvoke("Hello")
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "failure", ["error_with_choices", "invalid_tool", "malformed_usage_and_choice"]
+)
+def test_http_200_errors_are_safe_before_callbacks(failure):
+    detail = "private-upstream-detail-must-not-appear"
+    payload = completion()
+    if failure == "error_with_choices":
+        payload["error"] = {"code": 503, "message": detail}
+    elif failure == "invalid_tool":
+        payload["choices"][0]["finish_reason"] = "tool_calls"
+        payload["choices"][0]["message"]["tool_calls"] = [
+            {
+                "id": "call-fabricated",
+                "type": "function",
+                "function": {"name": "read_official_doc", "arguments": detail},
+            }
+        ]
+    else:
+        payload["usage"] = {"prompt_tokens": 10}
+        payload["choices"] = detail
+    completed, errors = [], []
+
+    class Recorder(BaseCallbackHandler):
+        def on_llm_end(self, response, **kwargs):
+            completed.append(response)
+
+        def on_llm_error(self, error, **kwargs):
+            errors.append(error)
+
+    async def run():
+        with pytest.raises(ProviderError) as caught:
+            async with open_chat_model(
+                api_key=API_KEY,
+                model=MODEL,
+                transport=httpx.MockTransport(
+                    lambda _: httpx.Response(200, json=payload)
+                ),
+            ) as model:
+                await model.ainvoke("Hello", config={"callbacks": [Recorder()]})
+        assert detail not in "".join(traceback.format_exception(caught.value))
+
+    asyncio.run(run())
+    assert completed == []
+    assert len(errors) == 1
+    assert isinstance(errors[0], ProviderError)
+    assert detail not in str(errors[0])
+
+
+def test_escaped_secret_in_ignored_response_field_is_rejected():
+    payload = completion()
+    payload["ignored_sdk_field"] = API_KEY
+    escaped_key = "".join(f"\\u{ord(char):04x}" for char in API_KEY)
+    encoded = json.dumps(payload).replace(API_KEY, escaped_key)
+
+    async def run():
+        with pytest.raises(ProviderError, match="invalid response") as caught:
+            async with open_chat_model(
+                api_key=API_KEY,
+                model=MODEL,
+                transport=httpx.MockTransport(
+                    lambda _: httpx.Response(200, text=encoded)
+                ),
+            ) as model:
+                await model.ainvoke("Hello")
+        assert API_KEY not in "".join(traceback.format_exception(caught.value))
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "limits",
+    [
+        {"max_tokens": 0},
+        {"max_tokens": True},
+        {"max_tokens": 1.5},
+        {"timeout_seconds": 0},
+        {"timeout_seconds": float("inf")},
+        {"timeout_seconds": float("nan")},
+        {"timeout_seconds": True},
+        {"reasoning_effort": "unknown"},
+    ],
+)
+def test_invalid_request_limits_never_reach_transport(limits):
+    async def run():
+        with pytest.raises(ProviderError, match="Invalid OpenRouter"):
+            async with open_chat_model(
+                api_key=API_KEY,
+                model=MODEL,
+                transport=httpx.MockTransport(
+                    lambda _: pytest.fail("No request expected")
+                ),
+                **limits,
+            ):
+                pytest.fail("Invalid limits must not yield a model")
+
+    asyncio.run(run())

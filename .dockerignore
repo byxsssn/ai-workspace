@@ -14,5 +14,6 @@ tests
 docs
 scripts/*
 !scripts/backup_database.py
+!scripts/refresh_pypi_rankings.py
 **/*.dump
 **/*.sql

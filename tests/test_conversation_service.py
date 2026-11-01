@@ -26,7 +26,10 @@ def test_create_normalizes_title_and_commits() -> None:
 
         assert result is conversation
         service.repository.create.assert_awaited_with(
-            user_id=user_id, title=expected_title
+            user_id=user_id,
+            title=expected_title,
+            learning_topic=None,
+            learning_source=None,
         )
         session.commit.assert_awaited()
 
@@ -104,3 +107,37 @@ def test_list_messages_checks_ownership_before_reading_history(
     assert asyncio.run(service.list_messages(conversation_id, user_id)) is messages
     service.repository.get_by_id_for_user.assert_awaited_with(conversation_id, user_id)
     repository.list_by_conversation.assert_awaited_once_with(conversation_id)
+
+
+def test_update_title_returns_conversation_and_commits() -> None:
+    user_id, conversation_id, title = uuid4(), uuid4(), "New title"
+    session = Mock(spec=AsyncSession)
+    service = ConversationService(session)
+    service.repository = Mock(spec=ConversationRepository)
+    conversation_mock = Conversation(id=conversation_id, user_id=user_id, title=title)
+    service.repository.update_title.return_value = conversation_mock
+    updated_conversation = asyncio.run(
+        service.update_title(conversation_id, user_id, title)
+    )
+    assert updated_conversation is conversation_mock
+    service.repository.update_title.assert_awaited_once_with(
+        conversation_id, user_id, title
+    )
+    session.commit.assert_awaited_once()
+    session.rollback.assert_not_called()
+
+
+def test_update_title_raises_not_found_and_rolls_back() -> None:
+    user_id, conversation_id, title = uuid4(), uuid4(), "New title"
+    session = Mock(spec=AsyncSession)
+    service = ConversationService(session)
+    service.repository = Mock(spec=ConversationRepository)
+    service.repository.update_title.return_value = None
+    with pytest.raises(ConversationNotFoundError) as exc_info:
+        asyncio.run(service.update_title(conversation_id, user_id, title))
+    assert str(exc_info.value) == "Conversation not found"
+    service.repository.update_title.assert_awaited_once_with(
+        conversation_id, user_id, title
+    )
+    session.rollback.assert_awaited_once()
+    session.commit.assert_not_called()

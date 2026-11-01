@@ -1,9 +1,11 @@
+from typing import Literal
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_workspace.models import Conversation, Message
 from ai_workspace.repositories import ConversationRepository, MessageRepository
+from ai_workspace.schemas.conversation import ConversationCreateRequest
 
 
 class ConversationNotFoundError(Exception):
@@ -19,11 +21,21 @@ class ConversationService:
         self,
         user_id: UUID,
         title: str = "New conversation",
+        *,
+        learning_topic: Literal["fastapi"] | None = None,
+        learning_source: Literal["demo", "notion"] | None = None,
     ) -> Conversation:
+        # 服务调用也遵循成对约束；HTTP 校验不是唯一入口。
+        ConversationCreateRequest(
+            title=title, learning_topic=learning_topic, learning_source=learning_source
+        )
         normalized_title = title.strip() or "New conversation"
         try:
             conversation = await self.repository.create(
-                user_id=user_id, title=normalized_title
+                user_id=user_id,
+                title=normalized_title,
+                learning_topic=learning_topic,
+                learning_source=learning_source,
             )
             await self.session.commit()
         except Exception:
@@ -51,3 +63,18 @@ class ConversationService:
         return await MessageRepository(self.session).list_by_conversation(
             conversation_id
         )
+
+    async def update_title(
+        self, conversation_id: UUID, user_id: UUID, title: str
+    ) -> Conversation:
+        try:
+            comversation = await self.repository.update_title(
+                conversation_id, user_id, title
+            )
+            if comversation is None:
+                raise ConversationNotFoundError("Conversation not found")
+            await self.session.commit()
+        except Exception:
+            await self.session.rollback()
+            raise
+        return comversation

@@ -18,10 +18,15 @@ def test_conversation_is_registered_with_required_columns() -> None:
         "id",
         "user_id",
         "title",
+        "learning_topic",
+        "learning_source",
         "created_at",
         "updated_at",
     }
-    assert all(column.nullable is False for column in table.columns)
+    assert all(
+        column.nullable is (column.name in {"learning_topic", "learning_source"})
+        for column in table.columns
+    )
 
 
 def test_conversation_id_is_uuid_primary_key_with_generated_default() -> None:
