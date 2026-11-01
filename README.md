@@ -3,16 +3,17 @@
 一个面向 AI 与编程的技术探索、分析与个人学习工作台。后端使用 FastAPI、SQLAlchemy 和
 PostgreSQL，前端使用 React、TypeScript 和 Vite，支持用户自带 OpenRouter API 密钥（BYOK）。
 公共 PyPI 月度榜单无需登录；个人助手与学习地图在登录后使用。
-模型比较、历史趋势与工具目录作为后续扩展。
+普通助手可选接入独立 AA MCP，查询和比较模型评测快照；模型排行榜页面、历史趋势与工具目录作为后续扩展。
 
 榜单读取真实月度快照，在版本化的 20 个精选包目录中分类、筛选和排序；缺失数据保持未知。
 网页和普通聊天的 Agent 工具共用同一套排行榜服务，浏览页面不调用模型。
 来源、统计口径、缓存与启动说明见 [PyPI 排行榜](docs/pypi-rankings.md)。
+AA 的两个只读工具及本地配置见 [AA MCP 接入](docs/aa-mcp.md)；默认关闭，配置后由模型按需调用。
 
 学习地图展示 Notion 学习库的分类、状态、进度与笔记。从 FastAPI 卡片进入同一套会话界面，
 LangChain Agent 读取个人进度和三个受控官方章节，讲解、引用来源并保存对话。
 地图读取不调用模型；Notion 写回尚未实现。
-普通聊天和学习模式共用一套 Agent 运行链路；普通会话可查询公共榜单，学习模式按会话上下文启用资料读取工具。
+普通聊天和学习模式共用一套 Agent 运行链路；普通会话可查询公共榜单和已配置的 AA MCP，学习模式按会话上下文启用资料读取工具。
 使用与技术导读见 [统一 Agent 运行链路](docs/agent-runtime.md)、[学习地图](docs/learning-map.md)、
 [学习 Agent](docs/learning-agent.md)、[学习资料读取](docs/learning-sources.md)，
 整体方向见 [学习 Agent 计划](docs/learning-agent-plan.md)。

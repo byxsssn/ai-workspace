@@ -24,6 +24,8 @@ from langchain_core.messages import AIMessage
 from langgraph.errors import GraphRecursionError
 from langsmith import tracing_context
 
+from ai_workspace.agents.aa import AA_PROMPT, AAToolSession
+from ai_workspace.agents.aa_client import AAClient
 from ai_workspace.agents.rankings import RANKINGS_PROMPT, RankingToolSession
 from ai_workspace.learning.agent_errors import LearningAgentError
 from ai_workspace.learning.agent_models import LearningAnswer, LearningChatResponse
@@ -86,11 +88,13 @@ class AgentRunner:
         sources: LearningService,
         *,
         rankings: PypiRankingService | None = None,
+        aa_client: AAClient | None = None,
         model_factory: ModelFactory = open_chat_model,
         timeout_seconds: float | None = None,
     ) -> None:
         self.sources = sources
         self.rankings = rankings
+        self.aa_client = aa_client
         self.model_factory = model_factory
         self.timeout_seconds = timeout_seconds
 
@@ -111,26 +115,51 @@ class AgentRunner:
             if not policy and self.rankings is not None
             else None
         )
+        aa_tools = (
+            AAToolSession(self.aa_client) if not policy and self.aa_client else None
+        )
+        sessions = [
+            session for session in (ranking_tools, aa_tools) if session is not None
+        ]
+        tools = (
+            policy.session.build_tools()
+            if policy
+            else [item for session in sessions for item in session.build_tools()]
+        )
+        prompt = (
+            policy.system_prompt
+            if policy
+            else "\n".join(
+                text
+                for text, enabled in (
+                    (RANKINGS_PROMPT, ranking_tools),
+                    (AA_PROMPT, aa_tools),
+                )
+                if enabled
+            )
+            or None
+        )
         secrets = (api_key,)
         if self.sources.settings.notion_api_token is not None:
             secrets += (self.sources.settings.notion_api_token.get_secret_value(),)
         guard = _SecretGuard(secrets)
         middleware = [
             ModelCallLimitMiddleware(
-                run_limit=5 if policy else 3 if ranking_tools else 1,
+                run_limit=5 if policy or aa_tools else 3 if ranking_tools else 1,
                 exit_behavior="error",
             )
         ]
-        if policy or ranking_tools:
+        if policy or sessions:
             middleware.append(
                 ToolCallLimitMiddleware(
-                    run_limit=6 if policy else 2, exit_behavior="error"
+                    run_limit=6 if policy else 4 if aa_tools else 2,
+                    exit_behavior="error",
                 )
             )
         middleware.append(guard)
         timeout = self.timeout_seconds
         if timeout is None:
-            timeout = 120 if policy or ranking_tools else 60
+            timeout = 120 if policy or sessions else 60
 
         try:
             guard.check_payload([message.model_dump() for message in messages])
@@ -147,16 +176,8 @@ class AgentRunner:
                     ) as llm:
                         agent = create_agent(
                             model=llm,
-                            tools=policy.session.build_tools()
-                            if policy
-                            else ranking_tools.build_tools()
-                            if ranking_tools
-                            else [],
-                            system_prompt=policy.system_prompt
-                            if policy
-                            else RANKINGS_PROMPT
-                            if ranking_tools
-                            else None,
+                            tools=tools,
+                            system_prompt=prompt,
                             response_format=ToolStrategy(
                                 LearningAnswer, handle_errors=False
                             )
@@ -192,9 +213,12 @@ class AgentRunner:
             final = generated[-1]
             if final.tool_calls or not final.text.strip():
                 raise ProviderError("Agent did not return a valid text response")
-            content = (
-                ranking_tools.append_source(final.text) if ranking_tools else final.text
-            )
+            # 先统一决定正文，再附所有已核验来源，避免某个工具失败覆盖另一个来源。
+            failures = [
+                session.failure_answer for session in sessions if session.failure_answer
+            ]
+            content = "\n\n".join(failures) if failures else final.text
+            content += "".join(session.source_footer for session in sessions)
             guard.check_payload(content)
             return ModelResponse(content=content, model=actual_model, usage=usage)
         except LearningAgentError:

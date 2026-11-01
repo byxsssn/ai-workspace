@@ -21,6 +21,7 @@ dependencies = [
     "langgraph>=1.2.19,<2",
     "langsmith>=0.14.16,<0.15",
     "markdownify>=1.2.3",
+    "mcp>=2.3,<3",
     "pwdlib[argon2]>=0.3.1",
     "pydantic-settings>=2.15.0",
     "pyjwt>=2.14.0",

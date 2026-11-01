@@ -132,20 +132,24 @@ class RankingToolSession:
             self._used_successfully = True
             return {"status": "success", **result.model_dump(mode="json")}
 
-    def append_source(self, content: str) -> str:
-        """实际取到的来源随正文保存；这不代表自动核验了模型的每个数字。"""
-        snapshot = self._snapshot
-        if not self._used_successfully or snapshot is None:
+    @property
+    def failure_answer(self) -> str | None:
+        if not self._used_successfully:
             if self._failed:
                 # 工具彻底失败时，不把模型自行推测的数字伪装成查询结果保存。
                 return RANKINGS_UNAVAILABLE_ANSWER
             if self._invalid_filters:
                 return INVALID_FILTER_ANSWER
-            return content
+        return None
+
+    @property
+    def source_footer(self) -> str:
+        snapshot = self._snapshot
+        if not self._used_successfully or snapshot is None:
+            return ""
         status = "；当前为较旧快照" if snapshot.stale else ""
         return (
-            content
-            + f"\n\n数据来源：{snapshot.source}（{snapshot.upstream}）"
+            f"\n\n数据来源：{snapshot.source}（{snapshot.upstream}）"
             + f"\n统计月份：{snapshot.period}；精选目录：{snapshot.candidate_count} 个包"
             + f"（{snapshot.catalog_version}）{status}"
             + f"\n快照：{snapshot.snapshot_id[:12]}"
